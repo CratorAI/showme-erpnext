@@ -16,6 +16,13 @@ localhost) without installing anything on the server, and runs on **your own API
 
 <sub>Recorded on ERPNext's demo data with `scripts/record-demo.mjs`, in real time except that long unchanged stretches are shortened. That task cost 6¢.</sub>
 
+**Voice:** talk to it like a colleague on a call. [▶ Watch a voice call](docs/voice-demo.mp4) (1:40, with sound)
+
+[![A business owner asks ShowMe, out loud, where their customers are and to add a new one; ShowMe answers by voice and does it on screen](docs/voice-demo.jpg)](docs/voice-demo.mp4)
+
+<sub>The business owner is an AI avatar (made with Tavus) whose lines were played into the microphone. Everything
+else is a real, unedited ShowMe voice call on ERPNext's demo data, recorded with `scripts/record-voice-demo.mjs`.</sub>
+
 ## What it does
 
 - **Shows you, on your screen.** It uses ERPNext's own screens with a visible cursor, not hidden API calls, and
@@ -99,9 +106,11 @@ your site first, or log in as a user whose roles match what you want it to be ab
 
 Know the limits:
 
-- **`run_js` is not behind the approval cards.** To read data and handle fiddly widgets, the model can run
-  JavaScript in the page with Frappe's API. It is told not to write or submit documents that way, and Frappe's
-  permissions still apply, but nothing in the code stops it. The approval cards guard what the cursor clicks.
+- **`run_js` can read, not write.** To read data and handle fiddly widgets, the model can run JavaScript in the
+  page with Frappe's API. While its code runs, ShowMe refuses requests that would change data: the REST API's
+  writes and Frappe methods named like a write (insert, save, submit, cancel, delete, set_value, rename, amend,
+  `run_doc_method`, …). So changes go through the visible cursor and its approval cards. A custom server method
+  that writes under some other name could still get through; Frappe's permissions apply either way.
 - **Prompt injection.** The model reads what's on your screen. Text in your ERPNext (a customer name, a comment, an
   imported description) could try to give it instructions. Treat data from outside your business accordingly.
 
@@ -155,6 +164,7 @@ npm install && npx playwright install chromium
 export ANTHROPIC_API_KEY=… ERP_URL=http://localhost:8080 ERP_USER=Administrator ERP_PASS=admin
 
 ASK="Which customers owe us money?" npm run e2e     # one task, prints the transcript
+node scripts/guard.test.mjs                          # run_js can read but not save/submit/cancel/delete (no API key)
 node scripts/conversations.test.mjs                  # persistence across restart, 100-conversation History, memory cards
 MODE=clear node scripts/context.test.mjs             # server-side clearing of old tool results keeps caching high
 MODE=compact node scripts/context.test.mjs           # compaction between tasks; recalls the first request verbatim

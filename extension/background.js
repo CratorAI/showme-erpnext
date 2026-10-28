@@ -205,6 +205,63 @@ const runJs = (tabId, code) =>
 				}, 150);
 			});
 			const timeout = new Promise((resolve) => setTimeout(() => resolve({ ok: false, v: "Timed out after 30s (a Frappe call may have failed silently). Try another approach." }), 30000));
+
+			// Write guard: while the model's code runs, requests that would change data are refused, so saving,
+			// submitting, cancelling and deleting can only happen through the visible cursor (and its approval
+			// cards). Covers Frappe's REST API and every frappe.call / fetch to a method named like a write.
+			const blocked = [];
+			const isWrite = (url, verb) => {
+				let u;
+				try {
+					u = new URL(url, location.href);
+				} catch {
+					return false;
+				}
+				if (u.origin !== location.origin) return false;
+				const p = u.pathname;
+				const v = String(verb || "GET").toUpperCase();
+				if (/^\/api\/(resource|v2\/document)\//.test(p)) return v !== "GET";
+				const m = p.match(/^\/api\/(?:v2\/)?method\/([^/?#]+)/);
+				if (!m) return false;
+				const name = decodeURIComponent(m[1]);
+				const last = name.split(".").pop();
+				return /savedocs|run_doc_method|run_method|bulk_|delete|cancel|submit|amend|rename/i.test(name) ||
+					/^(insert|save|set_value|update|make|create|apply|post|remove|add|import|upload|enqueue|discard|toggle|assign|attach|send|execute)/i.test(last);
+			};
+			const refuse = (url) => {
+				const name = String(url).replace(/^.*\/api\/(?:v2\/)?(method|resource|document)\//, "");
+				blocked.push(name);
+				return `ShowMe blocked a write from run_js (${name}). Save, submit, cancel and delete through the visible cursor instead (show_me_click), so the user sees it.`;
+			};
+			const origFetch = window.fetch;
+			const XHR = XMLHttpRequest.prototype;
+			const origOpen = XHR.open, origSend = XHR.send;
+			window.fetch = function (input, init) {
+				const url = typeof input === "string" || input instanceof URL ? String(input) : input?.url;
+				const verb = init?.method || (typeof input === "object" && input?.method) || "GET";
+				if (isWrite(url, verb)) return Promise.reject(new Error(refuse(url)));
+				return origFetch.apply(this, arguments);
+			};
+			XHR.open = function (verb, url) {
+				this.__showme = { verb, url };
+				return origOpen.apply(this, arguments);
+			};
+			XHR.send = function () {
+				const r = this.__showme;
+				if (r && isWrite(r.url, r.verb)) {
+					const msg = refuse(r.url);
+					// Fail the request the way a network error would, so frappe.call's promise rejects.
+					setTimeout(() => this.dispatchEvent(new ProgressEvent("error")), 0);
+					throw new Error(msg);
+				}
+				return origSend.apply(this, arguments);
+			};
+			const unguard = () => {
+				window.fetch = origFetch;
+				XHR.open = origOpen;
+				XHR.send = origSend;
+			};
+
 			const run = (async () => {
 				try {
 					const v = await new Function(`return (async () => { ${c} })()`)();
@@ -217,8 +274,13 @@ const runJs = (tabId, code) =>
 					return { ok: false, v: `${String((e && e.message) || e)}${t ? `\nFrappe error: ${t}` : ""}` };
 				}
 			})();
-			const result = await Promise.race([run, watch, timeout]);
+			let result = await Promise.race([run, watch, timeout]);
 			clearInterval(timer);
+			unguard();
+			if (blocked.length) {
+				window.frappe?.hide_msgprint?.(true);
+				result = { ok: false, v: `ShowMe blocked a write from run_js (${[...new Set(blocked)].join(", ")}). Saving, submitting, cancelling and deleting go through the visible cursor (show_me_click), so the user sees it and approves risky steps. Reading data with run_js is fine.` };
+			}
 			return result;
 		},
 		[code]
