@@ -12,7 +12,9 @@ uses ERPNext.
 It's a Chrome extension. It works with **any ERPNext you can open in Chrome** (Frappe Cloud, self-hosted,
 localhost) without installing anything on the server, and runs on **your own API keys**.
 
-<!-- TODO: demo GIF recorded on a demo site (no customer data) -->
+![ShowMe raising a purchase request in ERPNext: the user asks in plain words, ShowMe maps it to a Material Request, opens it through search, fills the item, quantity, date and warehouse with a visible cursor, and saves a draft](docs/demo.gif)
+
+<sub>Recorded on ERPNext's demo data with `scripts/record-demo.mjs`; waiting time in the sidebar is shown at 3× speed. That task cost 4.2¢.</sub>
 
 ## What it does
 

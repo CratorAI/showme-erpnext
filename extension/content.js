@@ -22,6 +22,9 @@
 		"a[href]", "button", "input:not([type=hidden])", "select", "textarea",
 		"[role=button]", "[role=tab]", "[role=menuitem]", "[role=link]", "[role=option]",
 		"[contenteditable=true]", ".awesomplete li",
+		// Child-table cells: Frappe draws them as plain divs until clicked, so list them explicitly,
+		// otherwise existing (empty) rows are invisible and the agent adds rows it doesn't need.
+		".grid-body .grid-row .grid-static-col[data-fieldname]",
 	].join(",");
 
 	const visible = (el) => {
@@ -46,10 +49,19 @@
 			return "textbox";
 		}
 		if (el.closest(".awesomplete")) return "option";
+		if (el.classList.contains("grid-static-col")) return "cell";
 		return tag === "button" ? "button" : "editable";
 	}
 
+	// Column label for a child-table cell, from the table's heading row.
+	function cellLabel(el) {
+		const table = el.closest(".form-grid, .grid-field") || el.closest("[data-fieldtype=Table]");
+		const head = table?.querySelector(`.grid-heading-row [data-fieldname="${el.dataset.fieldname}"]`);
+		return clean(head?.innerText) || el.dataset.fieldname;
+	}
+
 	function nameOf(el) {
+		if (el.classList?.contains("grid-static-col")) return cellLabel(el);
 		const field = el.closest("[data-fieldname]");
 		const label = field && field.querySelector(".control-label, label");
 		return clean(
@@ -82,9 +94,16 @@
 			if (el.closest("#trainer-root") || !visible(el)) continue;
 			if (!el.dataset.tref) el.dataset.tref = `e${nextRef++}`;
 			const role = roleOf(el);
-			const fieldname = el.closest("[data-fieldname]")?.dataset.fieldname;
+			let fieldname = el.closest("[data-fieldname]")?.dataset.fieldname;
+			let rowNote = "";
+			if (role === "cell") {
+				const tableField = el.closest(".frappe-control[data-fieldname]")?.dataset.fieldname;
+				fieldname = tableField ? `${tableField}.${el.dataset.fieldname}` : el.dataset.fieldname;
+				rowNote = ` row ${el.closest(".grid-row")?.dataset.idx || "?"}`;
+			}
 			let line = `${el.dataset.tref} ${role} "${nameOf(el)}"`;
-			if (fieldname) line += ` [${fieldname}]`;
+			if (fieldname) line += ` [${fieldname}]${rowNote}`;
+			if (role === "cell") line += ` = "${clean(el.innerText, 50)}"`;
 			if (role === "checkbox" || role === "radio") line += el.checked ? " checked" : " unchecked";
 			else if ("value" in el && el.value && role !== "button") line += ` = "${clean(el.value, 50)}"`;
 			if (el.getAttribute("aria-selected") === "true" || el.classList.contains("active")) line += " selected";
