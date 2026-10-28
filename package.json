@@ -1,0 +1,15 @@
+{
+	"name": "crator-for-erpnext",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Chrome extension: an AI copilot inside ERPNext that does things on screen, talks you through it, and adjusts your setup with your approval.",
+	"type": "module",
+	"license": "MIT",
+	"scripts": {
+		"e2e": "node scripts/e2e.mjs",
+		"zip": "cd extension && zip -r ../crator-for-erpnext.zip . -x '.*'"
+	},
+	"devDependencies": {
+		"playwright": "^1.64.1"
+	}
+}

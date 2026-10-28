@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8" />
+		<link rel="stylesheet" href="ui.css" />
+		<style>
+			body { width: 320px; padding: 16px; }
+			#site { font-family: "Geist Mono", ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
+		</style>
+	</head>
+	<body class="stack">
+		<div class="brand"><img src="icons/48.png" alt="" /><h2 style="margin: 0">Crator for ERPNext</h2></div>
+		<div class="card stack">
+			<div class="row" style="justify-content: space-between"><span id="site" class="muted">…</span><span id="state" class="pill">off</span></div>
+			<p id="explain"></p>
+			<div class="row" id="actions"></div>
+		</div>
+		<p id="keys" class="hint"></p>
+		<div class="row" style="justify-content: space-between">
+			<button class="link" id="settings">Settings, keys &amp; skills</button>
+		</div>
+		<script src="popup.js" type="module"></script>
+	</body>
+</html>
