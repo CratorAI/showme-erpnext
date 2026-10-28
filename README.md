@@ -26,8 +26,9 @@ localhost) without installing anything on the server, and runs on **your own API
 - **Learns your setup, with your OK.** When you mention how your business does things ("we call these
   indents"), it offers to remember it. Nothing is saved until you press **Remember**.
 - **Picks up where you left off.** Conversations are saved per site in your browser, with a History view.
-- **Voice (optional).** Talk to it and it talks back, narrating while the cursor moves. Uses OpenAI's GPT-Live;
-  the mic appears in the bar once you add an OpenAI key.
+- **Voice (optional).** Press the mic and it becomes a call: ShowMe says what it's about to do, then does it. Its
+  words appear as subtitles at its cursor, yours as a ring around your own pointer, and the bar shrinks to mute and
+  End. Uses OpenAI's GPT-Live; the mic appears once you add an OpenAI key.
 - **Setup changes, with your approval (optional).** Custom fields, field rules, scripts, notifications,
   workflows. First it checks whether standard ERPNext already does what you want. Each change needs your Apply,
   is logged, can be undone, and is shown to you once applied.
@@ -84,7 +85,7 @@ into a `site-notes` skill you can edit or delete. See [`examples/skills`](exampl
 ## Safety
 
 It acts **as you, with your ERPNext permissions**, in your browser session. Recommended: try it on a test copy of
-your site first.
+your site first, or log in as a user whose roles match what you want it to be able to touch.
 
 - **Drafts only by default.** It saves drafts and asks before submitting. Clicking **Submit, Cancel, Delete or
   Amend** always shows an approval card first (you can turn this off in settings).
@@ -93,6 +94,16 @@ your site first.
 - **Your keys** stay in this browser's extension storage and are sent only to `api.anthropic.com` /
   `api.openai.com`.
 - **Only on sites you turn on.** The extension asks for permission per site.
+- **Approval buttons only answer real clicks.** ShowMe's controls live in the page, so a page script could try to
+  press Apply; only genuine user input counts.
+
+Know the limits:
+
+- **`run_js` is not behind the approval cards.** To read data and handle fiddly widgets, the model can run
+  JavaScript in the page with Frappe's API. It is told not to write or submit documents that way, and Frappe's
+  permissions still apply, but nothing in the code stops it. The approval cards guard what the cursor clicks.
+- **Prompt injection.** The model reads what's on your screen. Text in your ERPNext (a customer name, a comment, an
+  imported description) could try to give it instructions. Treat data from outside your business accordingly.
 
 ## How it works
 
@@ -155,10 +166,14 @@ Need a test ERPNext? [frappe_docker](https://github.com/frappe/frappe_docker)'s 
 
 ## Limitations
 
+ShowMe is early (v0.1). It isn't on the Chrome Web Store yet: install it unpacked as above.
+
 - Desk only (`/app`, `/desk`), not the website or portal pages.
 - Sites whose Content-Security-Policy forbids `eval` break `run_js` (stock Frappe allows it).
 - Server Scripts are disabled on many hosted plans; that one kind of setup change will fail there.
 - A full page reload drops a voice call. It reconnects with a short summary of what just happened.
+- Voice needs access to OpenAI's GPT-Live API (`gpt-live-1`). The voice doesn't speak first: say hello to start.
+- Tests drive a real ERPNext in visible Chrome windows; clicking in them while they run can make them fail.
 
 ## License
 

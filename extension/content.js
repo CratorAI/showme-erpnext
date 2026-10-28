@@ -18,6 +18,7 @@
 	};
 	let hasKey = true;
 	let hasVoice = false; // the mic only appears once an OpenAI key is set
+	const BAR_PLACEHOLDER = "Ask ShowMe how to do something in your ERPNext…";
 	let nextRef = 1;
 
 	// ---------- 1. Snapshot ----------
@@ -132,6 +133,7 @@
 		chevUp: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>`,
 		chevD: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
 		dot: `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3.5"/></svg>`,
+		micOff: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 2 20 20M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.7"/><path d="M17 16.9A7 7 0 0 1 5 12v-2m14 0v2c0 .8-.1 1.5-.4 2.2M12 19v3"/></svg>`,
 		mic: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>`,
 		speaker: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>`,
 		speakerOff: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/></svg>`,
@@ -543,6 +545,13 @@
 	let inputHeard = ""; // user transcript since the last delegation
 	let activeDelegation = null;
 	let caption = "";
+	// Who is talking, from real audio levels (GPT-Live sends no speech start/stop events).
+	const lv = { mic: 0, out: 0, micAt: 0, outAt: 0, raf: 0, ctx: null, micA: null, outA: null };
+	let voiceSpoke = false; // anyone has said anything yet this call
+	let youRing, youCap, userPt = null;
+	let heard = "", heardUntil = 0; // what the user just said, shown briefly once they finish
+	let lastMove = 0, lastKey = 0, lastSaid = 0; // user pointer/keyboard activity; last narration sent to the voice // the user's side of a voice call, drawn at their own pointer
+	let follow = 0; // last time ShowMe's cursor moved to sit beside the user's pointer
 	const sentUpTo = new Map(); // assistant message key -> chars already sent as commentary
 	let voicePrimed = false; // set by the first transcript sync after a page load
 	let lastApprovalVoiced = null;
@@ -568,7 +577,12 @@
 			const audio = document.createElement("audio");
 			audio.autoplay = true;
 			root.appendChild(audio);
-			pc.ontrack = (e) => (audio.srcObject = e.streams[0]);
+			pc.ontrack = (e) => {
+				audio.srcObject = e.streams[0];
+				if (lv.ctx) lv.outA = analyser(e.streams[0]);
+			};
+			lv.ctx = new AudioContext();
+			lv.micA = analyser(stream);
 			stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 			const dc = pc.createDataChannel("oai-events");
 			dc.onmessage = (e) => onLiveEvent(JSON.parse(e.data));
@@ -585,9 +599,13 @@
 			await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
 			live = { pc, dc, stream, audio, startedAt: Date.now() };
 			muted = false;
+			voiceSpoke = false;
+			meter();
 			pc.onconnectionstatechange = () => ["failed", "closed", "disconnected"].includes(pc.connectionState) && voiceOn && stopLive(true);
 		} catch (err) {
 			console.log("[live] failed", String(err));
+			lv.ctx?.close().catch(() => {});
+			lv.ctx = null;
 			voiceOn = false;
 			sessionStorage.setItem("trainer-voice", "0");
 			panel.querySelector("#t-voice").classList.remove("on");
@@ -610,6 +628,12 @@
 		}
 		live = null;
 		speaking = false;
+		cancelAnimationFrame(lv.raf);
+		lv.ctx?.close().catch(() => {});
+		Object.assign(lv, { ctx: null, micA: null, outA: null, mic: 0, out: 0 });
+		cursor.style.filter = "";
+		say?.classList.remove("on");
+		inputHeard = "";
 		caption = dropped ? "Voice disconnected" : "";
 		updateHint();
 	}
@@ -624,7 +648,7 @@
 	const send = (evt) => live && live.dc.readyState === "open" && live.dc.send(JSON.stringify(evt));
 	const eid = () => `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 	const commentary = (content) =>
-		activeDelegation && content.trim() &&
+		activeDelegation && content.trim() && (lastSaid = performance.now()) &&
 		send({ type: "session.commentary.append", event_id: eid(), delegation_id: activeDelegation, content: content.slice(0, 1800) });
 	const liveThinking = (content) =>
 		activeDelegation && send({ type: "session.thinking.append", event_id: eid(), delegation_id: activeDelegation, content });
@@ -635,6 +659,7 @@
 		if (t === "session.input_transcript.delta") {
 			inputHeard += ev.delta || "";
 			panel.querySelector("textarea").value = inputHeard.trim();
+			updateBarVoice();
 		} else if (t === "session.output_transcript.delta") {
 			speaking = true;
 			caption = (caption + (ev.delta || "")).slice(-140);
@@ -649,6 +674,7 @@
 			activeDelegation = ev.delegation.id;
 			const request = inputHeard.trim();
 			inputHeard = "";
+			if (request) (heard = request), (heardUntil = performance.now() + 3000);
 			panel.querySelector("textarea").value = "";
 			if (request) emit({ type: "chat", text: request, voice: true });
 			else liveThinking(""); // nothing usable heard; let GPT-Live ask again
@@ -682,7 +708,150 @@
 		});
 	}
 
+	function analyser(stream) {
+		const a = lv.ctx.createAnalyser();
+		a.fftSize = 512;
+		lv.ctx.createMediaStreamSource(stream).connect(a);
+		return a;
+	}
+	const rms = (a) => {
+		if (!a) return 0;
+		const d = new Float32Array(a.fftSize);
+		a.getFloatTimeDomainData(d);
+		return Math.sqrt(d.reduce((n, v) => n + v * v, 0) / d.length);
+	};
+	// Each frame: read both levels, move the orb, and re-render the call line when the speaker changes.
+	function meter() {
+		const now = performance.now();
+		lv.mic = muted ? 0 : rms(lv.micA);
+		lv.out = rms(lv.outA);
+		if (lv.out > 0.015) lv.outAt = now;
+		if (lv.mic > 0.04) lv.micAt = now;
+		const turn = callTurn();
+		const level = Math.min(1, (turn === "them" ? lv.out : turn === "you" ? lv.mic : 0) * 6);
+		bar?.querySelector(".call .wave")?.style.setProperty("--lv", level.toFixed(2));
+		if (lv.mic > 0.04 || lv.out > 0.015) voiceSpoke = true;
+		// ShowMe glows with its own voice; the user's ring swells with theirs.
+		const glow = turn === "them" ? 4 + Math.min(1, lv.out * 6) * 16 : 3;
+		cursor.style.filter = `drop-shadow(0 0 ${glow.toFixed(1)}px rgba(249,105,60,${turn === "them" ? 0.85 : 0.4})) drop-shadow(0 2px 3px rgba(0,0,0,.35))`;
+		youRing?.style.setProperty("--s", (1 + (turn === "you" ? Math.min(1, lv.mic * 6) * 0.6 : 0)).toFixed(2));
+		// Come back beside the user only once they've settled: not while they move the mouse or type.
+		if (!busy && !connecting && now - follow > 250 && now - lastMove > 1200 && now - lastKey > 2000) {
+			follow = now;
+			parkBeside(false);
+		}
+		if (meter.turn === "you" && turn !== "you" && inputHeard.trim()) (heard = inputHeard.trim()), (heardUntil = now + 3000);
+		const heardExpired = heardUntil && now > heardUntil;
+		if (heardExpired) heardUntil = 0;
+		if (turn !== meter.turn || turn === "them" || heardExpired) updateBarVoice();
+		lv.raf = requestAnimationFrame(meter);
+	}
+	// "them": ShowMe is speaking; "you": the user is; "work": the agent is busy; "wait": the user's turn.
+	function callTurn() {
+		const now = performance.now();
+		if (connecting) return "connecting";
+		if (now - lv.outAt < 450 || (speaking && now - lv.outAt < 1200)) return "them";
+		if (!muted && now - lv.micAt < 600) return "you";
+		if (busy) return "work";
+		return muted ? "muted" : "wait";
+	}
+	// Subtitles, not tickers: break speech into phrases (broadcast style, up to two short lines, at punctuation where
+	// possible) and show the current phrase whole. Never truncate with an ellipsis.
+	function phrase(text) {
+		const words = text.replace(/\*\*|`/g, "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+		const chunks = [[]];
+		for (const w of words) {
+			let cur = chunks[chunks.length - 1];
+			const len = cur.join(" ").length;
+			// A word that ends a clause stays with its phrase, even a little past the line length.
+			const ends = /[.?!,;:]$/.test(w);
+			if (len && len + 1 + w.length > (ends ? 64 : 56)) chunks.push((cur = []));
+			cur.push(w);
+			const l2 = cur.join(" ").length;
+			if ((/[.?!]$/.test(w) && l2 >= 12) || (/[,;:]$/.test(w) && l2 >= 24)) chunks.push([]);
+		}
+		const done = chunks.filter((c) => c.length);
+		const last = done[done.length - 1] || [];
+		// A phrase that has only just started reads as a flicker: keep the previous one up a moment longer.
+		const open = chunks[chunks.length - 1].length > 0;
+		if (open && last.length < 2 && done.length > 1) return done[done.length - 2].join(" ");
+		return last.join(" ");
+	}
+
+	const homePt = () => userPt || { x: innerWidth / 2 - 80, y: innerHeight - 150 };
+
+	// Voice. During a call the bar shrinks to a capsule (waveform, mute, End) and the conversation moves to the
+	// two pointers: ShowMe's orange cursor glows and subtitles itself while it talks; the user's own pointer gets
+	// a ring that listens and their words appear beside it. Whoever has the floor is where the light is.
+	function updateBarVoice() {
+		if (!bar) return;
+		const input = bar.querySelector("input");
+		const inCall = Boolean(live) || connecting;
+		bar.classList.toggle("incall", inCall);
+		root.classList.toggle("t-incall", inCall);
+		if (!inCall) {
+			input.placeholder = caption || BAR_PLACEHOLDER;
+			bar.classList.toggle("voiceerr", Boolean(caption));
+			youCap.classList.remove("on");
+			return;
+		}
+		const turn = callTurn();
+		meter.turn = turn;
+		bar.querySelector(".call").dataset.turn = turn;
+		root.dataset.turn = turn;
+		const m = bar.querySelector('[data-a="mute"]');
+		m.innerHTML = muted ? ICON.micOff : ICON.mic;
+		m.title = muted ? "Unmute" : "Mute";
+		m.classList.toggle("off", muted);
+
+		// ShowMe's side: subtitles at its cursor, only while it is actually talking.
+		const showMeText = turn === "them" ? phrase(caption) : "";
+		if (showMeText) {
+			if (cursor.style.display !== "block") parkBeside(true);
+			say.textContent = showMeText;
+			say.style.left = cursor.style.left;
+			say.style.top = cursor.style.top;
+			say.style.transform = parseFloat(cursor.style.left) > innerWidth - 330 ? "translate(calc(-100% - 8px), 16px)" : "translate(16px,16px)";
+			say.classList.add("on");
+		} else say.classList.remove("on");
+
+		// The user's side: their words at their pointer while they talk (and a moment after).
+		// The user's side: only the ring while they talk (they're looking at the page, not their pointer), then
+		// what was heard, briefly, so a mishearing is caught.
+		const showHeard = heardUntil > performance.now() && turn !== "you";
+		const yours =
+			turn === "connecting" ? "Connecting… allow the microphone if Chrome asks"
+			: showHeard ? `Heard: “${heard}”`
+			: turn === "wait" && !voiceSpoke ? "I'm listening. Just talk."
+			: "";
+		youCap.textContent = yours;
+		youCap.classList.toggle("on", Boolean(yours));
+		youCap.classList.toggle("hint", !showHeard);
+		if (!userPt) {
+			const h = homePt();
+			youCap.style.left = `${h.x}px`;
+			youCap.style.top = `${h.y}px`;
+			youRing.style.transform = `translate(${h.x}px,${h.y}px) translate(-50%,-50%) scale(var(--s,1))`;
+		}
+	}
+
+	// Between tasks ShowMe's cursor waits beside the user's pointer, like someone sitting next to them.
+	function parkBeside(now) {
+		const h = homePt();
+		const x = Math.min(innerWidth - 40, h.x + 44), y = Math.min(innerHeight - 60, h.y + 30);
+		if (cursor.style.display !== "block") Object.assign(cursor.style, { display: "block" });
+		const dx = parseFloat(cursor.style.left) - x, dy = parseFloat(cursor.style.top) - y;
+		if (!now && Math.hypot(dx || 999, dy || 999) < 40) return;
+		cursor.style.left = `${x}px`;
+		cursor.style.top = `${y}px`;
+		if (say.classList.contains("on")) {
+			say.style.left = cursor.style.left;
+			say.style.top = cursor.style.top;
+		}
+	}
+
 	function updateHint() {
+		updateBarVoice();
 		const h = panel && panel.querySelector(".cbar .hint");
 		if (!h) return;
 		const wave = `<span class="twave"><i></i><i></i><i></i><i></i><i></i></span>`;
@@ -1072,12 +1241,49 @@
 	#t-bar .pill .ib.on{color:#fff;background:var(--brand)}
 	#t-bar .pill .ib svg{width:16px;height:16px}
 	#t-bar .pill .ib[hidden]{display:none}
+	#t-bar .pill .ib.on{animation:tring 1.3s ease-out infinite}
+	#t-bar .pill .ib.busy{color:var(--brand);animation:tdot 1.2s infinite both}
+	#t-bar.voiceerr .pill input::placeholder{color:var(--destructive,#d33)}
+	#t-bar .call{display:none;align-items:center;padding:0 6px 0 2px}
+	#t-bar.incall{width:auto;align-items:center}
+	#t-bar.incall .slot{width:min(560px,calc(100vw - 48px))}
+	#t-bar.incall .pill{padding:6px;gap:4px}
+	#t-bar.incall .call{display:flex}
+	#t-bar.incall .pill > .lg,#t-bar.incall .pill > input,#t-bar.incall .pill > [data-a="voice"],#t-bar.incall .pill > .go,#t-bar.incall .pill > [data-a="history"],#t-bar.incall .pill > [data-a="drawer"]{display:none}
+	#t-bar .wave{--lv:0;display:flex;align-items:center;gap:3px;height:22px;width:34px;justify-content:center;color:var(--muted-fg)}
+	#t-bar .wave i{width:3px;border-radius:2px;background:currentColor;height:calc(4px + var(--lv) * var(--h) * 18px);transition:height .07s linear}
+	#t-bar .wave i:nth-child(1){--h:.45}#t-bar .wave i:nth-child(2){--h:.8}#t-bar .wave i:nth-child(3){--h:1}#t-bar .wave i:nth-child(4){--h:.7}#t-bar .wave i:nth-child(5){--h:.4}
+	#t-bar .call[data-turn="them"] .wave{color:var(--brand)}
+	#t-bar .call[data-turn="you"] .wave{color:var(--fg)}
+	#t-bar .call[data-turn="work"] .wave i,#t-bar .call[data-turn="connecting"] .wave i{background:var(--brand);animation:twave .9s ease-in-out infinite}
+	#t-bar .call[data-turn="work"] .wave i:nth-child(2),#t-bar .call[data-turn="connecting"] .wave i:nth-child(2){animation-delay:.12s}
+	#t-bar .call[data-turn="work"] .wave i:nth-child(3),#t-bar .call[data-turn="connecting"] .wave i:nth-child(3){animation-delay:.24s}
+	#t-bar .call[data-turn="work"] .wave i:nth-child(4),#t-bar .call[data-turn="connecting"] .wave i:nth-child(4){animation-delay:.36s}
+	#t-bar .call[data-turn="work"] .wave i:nth-child(5),#t-bar .call[data-turn="connecting"] .wave i:nth-child(5){animation-delay:.48s}
+	#t-you{position:fixed;left:0;top:0;width:34px;height:34px;border-radius:50%;border:2px solid var(--fg);opacity:0;pointer-events:none;transition:opacity .25s,border-color .2s;z-index:6}
+	.t-incall #t-you{opacity:.12}
+	.t-incall[data-turn="wait"] #t-you{opacity:.35;animation:tlisten 2.2s ease-in-out infinite}
+	.t-incall[data-turn="you"] #t-you{opacity:.9}
+	.t-incall[data-turn="muted"] #t-you{opacity:0}
+	@keyframes tlisten{50%{box-shadow:0 0 0 6px color-mix(in oklab,var(--fg) 12%,transparent)}}
+	#t-youcap{position:fixed;left:0;top:0;transform:translate(calc(-100% - 22px),-50%);max-width:280px;background:var(--card);color:var(--fg);border:1px solid var(--border);font-size:13px;line-height:1.35;padding:6px 10px;border-radius:12px 4px 12px 12px;box-shadow:0 6px 18px rgba(0,0,0,.12);pointer-events:none;opacity:0;transition:opacity .25s;z-index:6}
+	#t-youcap.on{opacity:1}
+	#t-youcap.hint{color:var(--muted-fg)}
+	#t-bar:not(.incall) .pill > .cb{display:none}
+	#t-bar.incall .pill > .cb{display:grid;place-items:center}
+	#t-bar.incall .slot .sugs{display:none}
+	#t-bar .pill .ib.off{color:var(--destructive,#d33)}
+	#t-bar .pill .end{all:unset;cursor:pointer;flex:none;height:30px;padding:0 14px;border-radius:9px;background:#e5484d;color:#fff;font-size:13px;font-weight:600}
+	#t-bar .pill .end:hover{background:#d13d42}
+	@keyframes tbreathe{50%{transform:scale(1.25);opacity:.8}}
+	@keyframes tspin{to{transform:rotate(360deg)}}
 	#t-bar .pill .go{all:unset;cursor:pointer;width:32px;height:32px;border-radius:9px;background:var(--brand);color:#fff;display:grid;place-items:center}
 	#t-bar .pill .go svg{width:16px;height:16px}
 	#t-bar .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 10px 32px rgba(0,0,0,.12);padding:10px 14px;max-height:28vh;overflow:auto;font-size:14px;animation:tin .3s cubic-bezier(.23,1,.32,1) both}
 	#t-bar .card .tmsg.assistant p{margin:0 0 4px}
-	#t-bar .card .x{float:right;all:unset;cursor:pointer;color:var(--muted-fg);font-size:12px;margin-left:12px;float:right}
-	#t-bar .card .x:hover{color:var(--fg)}
+	#t-bar .card{position:relative;padding-right:36px}
+	#t-bar .card .x{all:unset;position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:6px;display:grid;place-items:center;cursor:pointer;color:var(--muted-fg);font-size:11px}
+	#t-bar .card .x:hover{color:var(--fg);background:var(--muted)}
 	#t-bar .card .foot{margin-top:10px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted-fg)}
 	#t-bar .card .foot button{all:unset;cursor:pointer;color:var(--muted-fg)}
 	#t-bar .card .foot button:hover{color:var(--fg);text-decoration:underline;text-underline-offset:3px}
@@ -1100,13 +1306,28 @@
 		bar = el(`<div id="t-bar" hidden>
 			<div class="slot"></div>
 			<div class="pill"><span class="lg">${CRATOR_ICON}</span>
-				<input placeholder="Ask ShowMe how to do something in your ERPNext…" />
+				<input placeholder="${BAR_PLACEHOLDER}" />
+				<div class="call"><span class="wave"><i></i><i></i><i></i><i></i><i></i></span></div>
 				<button class="ib" data-a="voice" title="Voice">${ICON.mic}</button>
 				<button class="ib" data-a="history" title="History">${ICON.history}</button>
 				<button class="ib" data-a="drawer" title="Full conversation">${ICON.chevUp}</button>
-				<button class="go" data-a="send" title="Send">${ICON.up}</button></div></div>`);
+				<button class="go" data-a="send" title="Send">${ICON.up}</button>
+				<button class="ib cb" data-a="mute" title="Mute">${ICON.mic}</button>
+				<button class="end cb" data-a="end" title="End voice">End</button></div></div>`);
 		say = el(`<div id="t-say"></div>`);
-		root.append(bar, say);
+		youRing = el(`<div id="t-you"></div>`);
+		youCap = el(`<div id="t-youcap"></div>`);
+		root.append(bar, say, youRing, youCap);
+		// The user's real pointer is where their side of a voice conversation shows up.
+		document.addEventListener("mousemove", (e) => {
+			if (!e.isTrusted) return;
+			userPt = { x: e.clientX, y: e.clientY };
+			lastMove = performance.now();
+			youRing.style.transform = `translate(${userPt.x}px,${userPt.y}px) translate(-50%,-50%) scale(var(--s,1))`;
+			youCap.style.left = `${userPt.x}px`;
+			youCap.style.top = `${userPt.y}px`;
+		}, { passive: true });
+		document.addEventListener("keydown", (e) => e.isTrusted && (lastKey = performance.now()), true);
 		const input = bar.querySelector("input");
 		input.addEventListener("keydown", (e) => {
 			e.stopPropagation(); // keep Frappe's shortcuts out of it
@@ -1127,7 +1348,9 @@
 					emit({ type: "chat", text: input.value.trim(), voice: voiceOn });
 					input.value = "";
 				}
-			} else if (a === "voice") setVoice(!voiceOn);
+			} else if (a === "voice") setVoice(true);
+			else if (a === "end") setVoice(false);
+			else if (a === "mute") toggleMute();
 			else if (a === "history") (drawerOpen && !panel.querySelector("#t-hist").hidden ? closeDrawer() : openDrawer(true));
 			else if (a === "drawer") (drawerOpen ? closeDrawer() : openDrawer(false));
 		});
@@ -1177,7 +1400,7 @@
 		go.title = busy ? "Stop" : "Send";
 		const mic = bar.querySelector('[data-a="voice"]');
 		mic.hidden = !hasVoice;
-		mic.classList.toggle("on", Boolean(live) && !muted);
+		updateBarVoice();
 
 		// The current task: everything after the last thing the user said.
 		let u = -1;
@@ -1190,10 +1413,15 @@
 			target = pending.ref ? find(pending.ref) : null; // spotlight what it wants to click
 		} else if (!busy && task.some((m) => m.role === "approval")) target = null;
 
+		const inCall = Boolean(live) || connecting;
 		if (busy) {
 			const last = task[task.length - 1];
 			const text = last?.role === "assistant" ? lastSentence(last.text) : last?.role === "activity" ? last.text : "";
-			sayAt(text, !text || last?.role === "activity");
+			// In a call the voice narrates and the cursor's movement is the action: no labels.
+			if (inCall) updateBarVoice();
+			else sayAt(text, !text || last?.role === "activity");
+		} else if (inCall) {
+			updateBarVoice();
 		} else {
 			say.classList.remove("on");
 			const answer = [...task].reverse().find((m) => m.role === "assistant" && m.text.trim());
@@ -1317,6 +1545,18 @@
 		}
 	}
 
+	// Say, then do: in a voice call, the cursor waits for ShowMe to finish saying what it's about to do. The
+	// narration line reaches the voice as the step starts and is spoken ~1s later, so first wait for speech to
+	// begin, then for it to end. Capped so a quiet voice never stalls the work.
+	async function letVoiceFinish() {
+		if (!live) return;
+		const t0 = performance.now();
+		await sleep(200); // let this step's narration line reach the voice
+		if (performance.now() - lastSaid < 2500)
+			while (performance.now() - lv.outAt > 300 && performance.now() - t0 < 1800) await sleep(60);
+		while (performance.now() - lv.outAt < 350 && performance.now() - t0 < 4500) await sleep(60);
+	}
+
 	// ---------- 6. Wiring to the background ----------
 
 	chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
@@ -1334,6 +1574,7 @@
 				case "click": {
 					const target = find(msg.ref);
 					if (!target) throw new Error(`No element ${msg.ref} on screen any more. Look at the screen again.`);
+					await letVoiceFinish();
 					await pointTo(msg.ref);
 					await clickEl(target);
 					await settle();
@@ -1342,6 +1583,7 @@
 				case "type": {
 					const target = find(msg.ref);
 					if (!target) throw new Error(`No element ${msg.ref} on screen any more. Look at the screen again.`);
+					await letVoiceFinish();
 					await pointTo(msg.ref);
 					await typeInto(target, msg.text, msg.pick);
 					await settle();
