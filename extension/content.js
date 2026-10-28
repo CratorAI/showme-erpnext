@@ -1,5 +1,5 @@
 // ShowMe for ERPNext: content script (runs in the page, in the extension's isolated world).
-//  1. The sidebar: chat, steps, approval cards, voice.
+//  1. The bar and thread card: chat, approval cards, voice.
 //  2. The agent's eyes: snapshot() lists what's on screen as ref-tagged lines ("e12 textbox …").
 //  3. The agent's hands: an animated cursor, then real-looking pointer/mouse/keyboard events.
 // The agent itself runs in the extension's service worker (background.js).
@@ -9,11 +9,15 @@
 	const isDesk = () => /^\/(app|desk)(\/|$)/.test(location.pathname);
 
 	const bg = (msg) => chrome.runtime.sendMessage(msg).catch(() => ({}));
+	// ShowMe's controls live in the page's DOM, so page scripts could "click" them with synthetic events
+	// (e.g. pressing Apply on an approval card). Only real user input (isTrusted) may act.
+	const trusted = (fn) => (e) => (e && e.isTrusted === false ? undefined : fn(e));
 	const emit = (evt) => {
 		if (evt.type === "chat") bg({ kind: "chat", text: evt.text, voice: evt.voice });
 		else if (evt.type === "approve" || evt.type === "reject") bg({ kind: evt.type, id: evt.id });
 	};
 	let hasKey = true;
+	let hasVoice = false; // the mic only appears once an OpenAI key is set
 	let nextRef = 1;
 
 	// ---------- 1. Snapshot ----------
@@ -119,15 +123,13 @@
 
 	// ---------- 2. Visual trainer ----------
 
-	const PANEL_W = 380;
-	// Width the page has left once the sidebar is open; cards stay out from under it.
-	const viewW = () => innerWidth - (document.documentElement.classList.contains("trainer-open") ? PANEL_W : 0);
 
 	const CRATOR_ICON = `<svg viewBox="0 0 25 25" fill="currentColor"><path d="M19.0342 20.2256C19.0342 21.6609 17.8708 22.8249 16.4355 22.8252H8.50781C7.07231 22.8252 5.9082 21.6611 5.9082 20.2256V18.8896H19.0342V20.2256ZM5.9082 18.8896H4.42285C2.98745 18.8896 1.82427 17.7264 1.82422 16.291V8.36328C1.82422 6.92783 2.98742 5.76375 4.42285 5.76367H5.9082V18.8896ZM20.2256 5.76367C21.6611 5.76367 22.8252 6.92778 22.8252 8.36328V16.291C22.8251 17.7265 21.6611 18.8896 20.2256 18.8896H19.0342V5.76367H20.2256ZM16.4355 1.82324C17.8708 1.82349 19.0341 2.98657 19.0342 4.42188V5.76367H5.9082V4.42188C5.90825 2.98641 7.07234 1.82324 8.50781 1.82324H16.4355Z"/></svg>`;
 	const ICON = {
 		x: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
 		up: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>`,
 		chevR: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
+		chevUp: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>`,
 		chevD: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
 		dot: `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3.5"/></svg>`,
 		mic: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>`,
@@ -167,12 +169,14 @@
 
 	html.trainer-anim body{transition:margin-right .32s cubic-bezier(.23,1,.32,1)}
 	html.trainer-anim .navbar{transition:right .32s cubic-bezier(.23,1,.32,1)}
-	html.trainer-open body{margin-right:${PANEL_W}px !important}
-	html.trainer-open .navbar, html.trainer-open header.navbar{right:${PANEL_W}px !important}
-	#trainer-panel{position:fixed;top:0;right:0;bottom:0;width:${PANEL_W}px;background:var(--bg);border-left:1px solid var(--border);display:flex;flex-direction:column;pointer-events:auto;z-index:3}
-	#trainer-panel{transition:transform .34s cubic-bezier(.23,1,.32,1),box-shadow .34s,visibility 0s}
-	#trainer-panel.closed{transform:translateX(100%);visibility:hidden;transition:transform .24s cubic-bezier(.4,0,1,1),visibility 0s .24s}
-	#trainer-panel.noanim,#trainer-launch.noanim{transition:none!important}
+	/* The full conversation / History: a card that floats up from the bar (there is no sidebar). */
+	#trainer-panel{position:fixed;left:50%;bottom:92px;width:min(660px,calc(100vw - 48px));height:min(64vh,680px);transform:translateX(-50%);
+		background:var(--bg);border:1px solid var(--border);border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.18),0 2px 8px rgba(0,0,0,.06);
+		display:flex;flex-direction:column;overflow:hidden;pointer-events:auto;z-index:4;
+		transition:transform .3s cubic-bezier(.23,1,.32,1),opacity .2s,visibility 0s}
+	#trainer-panel.closed{transform:translate(-50%,14px) scale(.98);opacity:0;visibility:hidden;transition:transform .2s,opacity .15s,visibility 0s .2s}
+	#trainer-panel form{display:none}
+	#trainer-panel.noanim{transition:none!important}
 	#trainer-panel header{height:56px;padding:0 12px 0 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
 	#trainer-panel header .logo{width:22px;height:22px;color:var(--fg)}
 	#trainer-panel header .t{font-weight:600;font-size:15px;letter-spacing:-.01em}
@@ -313,12 +317,6 @@
 	@keyframes tdot{0%,80%,100%{opacity:.3;transform:scale(.8)}40%{opacity:1;transform:none}}
 	@media (prefers-reduced-motion: reduce){#trainer-root *,#trainer-root *:before{animation:none!important;transition:none!important}}
 
-	#trainer-launch{position:fixed;right:20px;bottom:20px;width:44px;height:44px;border-radius:12px;border:1px solid var(--border);background:var(--card);color:var(--fg);box-shadow:0 4px 14px rgba(0,0,0,.1);cursor:pointer;pointer-events:none;display:grid;place-items:center;
-		opacity:0;transform:scale(.6) translateY(8px);transition:opacity .2s,transform .3s cubic-bezier(.34,1.56,.64,1)}
-	#trainer-launch.show{opacity:1;transform:none;pointer-events:auto;transition-delay:.12s}
-	#trainer-launch:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.14)}
-	#trainer-launch:active{transform:scale(.94)}
-	#trainer-launch svg{width:22px;height:22px}
 	#trainer-root #trainer-cursor{position:fixed;width:22px;height:22px;margin:-4px 0 0 -4px;display:none;transition:left .7s cubic-bezier(.4,0,.2,1),top .7s cubic-bezier(.4,0,.2,1);filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}
 	#trainer-ripple{position:fixed;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;border:3px solid var(--brand);opacity:0;pointer-events:none}
 	#trainer-ripple.go{animation:tripple .5s ease-out}
@@ -359,7 +357,6 @@
 						<button type="button" class="mic" id="t-mic" title="Talk (or hold Space in voice mode)">${ICON.mic}<span class="ring"></span></button>
 						<button class="send" title="Send">${ICON.up}</button></div></div></div></form>
 			</aside>
-			<button id="trainer-launch" title="ShowMe (⌘J)">${CRATOR_ICON}</button>
 			<svg id="trainer-cursor" viewBox="0 0 24 24"><path d="M4 2l16 9-7 2-3 7z" fill="#f9693c" stroke="#fff" stroke-width="1.5"/></svg>
 			<div id="trainer-ripple"></div>`;
 		document.body.appendChild(root);
@@ -383,17 +380,19 @@
 		sendText = send;
 		panel.querySelector("form").addEventListener("submit", (e) => {
 			e.preventDefault();
+			if (!e.isTrusted && !e.submitter) return;
 			if (busy && !box.value.trim()) return bg({ kind: "stop" });
 			send();
 		});
 		box.addEventListener("keydown", (e) => {
 			e.stopPropagation(); // keep Frappe's keyboard shortcuts out of the composer
+			if (!e.isTrusted) return;
 			if (e.key === "Enter" && !e.shiftKey) {
 				e.preventDefault();
 				send();
 			}
 		});
-		panel.querySelector("#t-close").onclick = () => setOpen(false);
+		panel.querySelector("#t-close").onclick = () => closeDrawer();
 		panel.querySelector("#t-settings").onclick = () => bg({ kind: "open-settings" });
 		panel.querySelector("#t-new").onclick = () => {
 			openGroups.clear();
@@ -403,21 +402,29 @@
 		panel.querySelector("#t-history").onclick = () => showHistory(panel.querySelector("#t-hist").hidden);
 		panel.querySelector("#t-voice").onclick = () => setVoice(!voiceOn);
 		panel.querySelector("#t-mic").onclick = () => toggleMute();
-		root.querySelector("#trainer-launch").onclick = () => setOpen(true);
 		document.addEventListener("keydown", (e) => {
+			// Esc closes the thread card wherever focus is (e.g. right after pressing New inside it).
+			if (e.key === "Escape" && drawerOpen) {
+				e.preventDefault();
+				closeDrawer();
+				return;
+			}
 			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
 				e.preventDefault();
-				setOpen(panel.classList.contains("closed"));
+				ensureBar();
+				if (drawerOpen) closeDrawer();
+				bar.hidden = !bar.hidden;
+				if (!bar.hidden) bar.querySelector("input").focus();
+				return;
 			}
 		});
+		renderBar();
 		// First paint: no slide-in on every page load, only on user toggles.
 		panel.classList.add("noanim");
-		root.querySelector("#trainer-launch").classList.add("noanim");
-		setOpen(sessionStorage.getItem("trainer-closed") !== "1");
+		setOpen(false); // the thread card opens on demand
 		requestAnimationFrame(() =>
 			requestAnimationFrame(() => {
 				panel.classList.remove("noanim");
-				root.querySelector("#trainer-launch").classList.remove("noanim");
 				document.documentElement.classList.add("trainer-anim");
 			})
 		);
@@ -428,7 +435,7 @@
 		requestAnimationFrame(track);
 	}
 
-	// ---------- 3. Chat sidebar (Crator style) ----------
+	// ---------- 3. Thread card: the full conversation ----------
 	// The daemon owns the transcript; the page just renders it (so it survives full reloads).
 
 	let panel, msgs, transcript = [], busy = false;
@@ -447,10 +454,6 @@
 
 	function setOpen(open) {
 		panel.classList.toggle("closed", !open);
-		root.querySelector("#trainer-launch").classList.toggle("show", !open);
-		document.documentElement.classList.toggle("trainer-open", open);
-		sessionStorage.setItem("trainer-closed", open ? "0" : "1");
-		if (open) panel.querySelector("textarea").focus();
 	}
 
 	const SUGGESTIONS = [
@@ -505,9 +508,9 @@
 		const foot = d.querySelector(".qf");
 		if (m.status === "pending") {
 			const cancel = el(`<button class="lnk">Cancel</button>`);
-			cancel.onclick = () => emit({ type: "reject", id: m.id });
+			cancel.onclick = trusted(() => emit({ type: "reject", id: m.id }));
 			const apply = el(`<button class="btn">${{ change: "Apply", memory: "Remember" }[m.kind] || "Allow"}</button>`);
-			apply.onclick = () => emit({ type: "approve", id: m.id });
+			apply.onclick = trusted(() => emit({ type: "approve", id: m.id }));
 			foot.append(cancel, apply);
 		} else {
 			const label = { applying: "Applying…", applied: "Applied", approved: m.kind === "memory" ? "Saved to site notes" : "Allowed", cancelled: m.kind === "memory" ? "Not saved" : "Cancelled", failed: "Failed, nothing changed" }[m.status];
@@ -661,7 +664,7 @@
 			if (m.role === "approval") {
 				if (m.status === "pending" && lastApprovalVoiced !== m.id) {
 					lastApprovalVoiced = m.id;
-					commentary(`I've put a change up for approval in the sidebar: ${m.summary} Ask if they want it applied; they can say yes or tap Apply.`);
+					commentary(`I've put a change up for approval above the ShowMe bar: ${m.summary} Ask if they want it applied; they can say yes or tap Apply.`);
 				}
 				return;
 			}
@@ -709,7 +712,7 @@
 			for (const s of SUGGESTIONS) {
 				const b = el(`<button class="sugg"></button>`);
 				b.textContent = s;
-				b.onclick = () => emit({ type: "chat", text: s });
+				b.onclick = trusted(() => emit({ type: "chat", text: s }));
 				e.appendChild(b);
 			}
 			msgs.appendChild(e);
@@ -754,6 +757,7 @@
 		sendBtn.title = busy ? "Stop" : "Send";
 		if (atBottom || busy) msgs.scrollTop = msgs.scrollHeight;
 		voiceSync();
+		renderBar();
 	}
 
 	let convId = null;
@@ -798,7 +802,7 @@
 		panel.querySelector("#t-history").classList.toggle("on", open);
 		box.hidden = !open;
 		msgs.hidden = open;
-		panel.querySelector("form").hidden = open;
+
 		if (!open) return renderChat();
 		const { items = [] } = await bg({ kind: "list-conversations" });
 		items.sort((a, b) => (b.pinned - a.pinned) || (b.updatedAt - a.updatedAt));
@@ -815,7 +819,7 @@
 				${it.pinned ? `<span class="pinned">${ICON.pin}</span>` : ""}
 				<div class="ac"><button data-a="pin">${it.pinned ? "Unpin" : "Pin"}</button><button data-a="rename">Rename</button><button data-a="export">Export</button><button data-a="delete">Delete</button></div></div>`);
 			row.querySelector(".tt").textContent = it.title;
-			row.onclick = async (e) => {
+			row.onclick = trusted(async (e) => {
 				const a = e.target.dataset?.a;
 				e.stopPropagation();
 				if (a === "pin") await bg({ kind: "pin-conversation", id: it.id });
@@ -842,7 +846,7 @@
 					return showHistory(false);
 				}
 				showHistory(true);
-			};
+			});
 			box.appendChild(row);
 		}
 	}
@@ -925,7 +929,7 @@
 	}
 
 	function placeCard(r) {
-		const W = 340, H = card.offsetHeight || 180, pad = 16, VW = viewW();
+		const W = 340, H = card.offsetHeight || 180, pad = 16, VW = innerWidth;
 		let left, top;
 		if (!r) {
 			left = VW - W - 24;
@@ -1027,6 +1031,11 @@
 		}
 		cursor.style.left = `${x}px`;
 		cursor.style.top = `${y}px`;
+		if (say && say.classList.contains("on")) {
+			say.style.left = `${x}px`;
+			say.style.top = `${y}px`;
+			say.style.transform = x > innerWidth - 330 ? "translate(calc(-100% - 8px), 16px)" : "translate(16px,16px)";
+		}
 		await new Promise((r) => setTimeout(r, 750));
 		Object.assign(ripple.style, { left: `${x}px`, top: `${y}px` });
 		ripple.classList.remove("go");
@@ -1039,6 +1048,177 @@
 		const e = find(ref);
 		return e ? nameOf(e) : "";
 	};
+
+	// ---------- 7. The bar: no sidebar, the words go where the action is ----------
+	// A floating "Ask ShowMe" bar at the bottom; ShowMe's cursor carries the narration as a label while it
+	// works; the result is a short card above the bar. The full conversation and History open as a card
+	// that rises from the bar.
+
+	let layout = "cursor";
+	let bar, say, drawerOpen = false;
+
+	const CURSOR_CSS = `
+	#t-bar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);width:min(660px,calc(100vw - 48px));display:flex;flex-direction:column;gap:8px;pointer-events:none;z-index:5}
+	#t-bar>*{pointer-events:auto}
+	#t-bar[hidden]{display:none}
+	#t-bar.thread .slot{display:none}
+	#t-bar .pill{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--border);border-radius:18px;box-shadow:0 10px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);padding:7px 7px 7px 14px;transition:box-shadow .2s,border-color .2s}
+	#t-bar .pill:focus-within{border-color:color-mix(in oklab,var(--fg) 22%,transparent);box-shadow:0 12px 40px rgba(0,0,0,.18)}
+	#t-bar .pill .lg{width:18px;height:18px;color:var(--fg);flex-shrink:0}
+	#t-bar .pill input{flex:1;min-width:0;border:0;outline:none;background:transparent;font:inherit;font-size:14.5px;color:var(--fg);padding:6px 4px}
+	#t-bar .pill input::placeholder{color:var(--muted-fg)}
+	#t-bar .pill .ib{all:unset;cursor:pointer;width:32px;height:32px;border-radius:9px;display:grid;place-items:center;color:var(--muted-fg)}
+	#t-bar .pill .ib:hover{background:var(--muted);color:var(--fg)}
+	#t-bar .pill .ib.on{color:#fff;background:var(--brand)}
+	#t-bar .pill .ib svg{width:16px;height:16px}
+	#t-bar .pill .ib[hidden]{display:none}
+	#t-bar .pill .go{all:unset;cursor:pointer;width:32px;height:32px;border-radius:9px;background:var(--brand);color:#fff;display:grid;place-items:center}
+	#t-bar .pill .go svg{width:16px;height:16px}
+	#t-bar .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 10px 32px rgba(0,0,0,.12);padding:10px 14px;max-height:28vh;overflow:auto;font-size:14px;animation:tin .3s cubic-bezier(.23,1,.32,1) both}
+	#t-bar .card .tmsg.assistant p{margin:0 0 4px}
+	#t-bar .card .x{float:right;all:unset;cursor:pointer;color:var(--muted-fg);font-size:12px;margin-left:12px;float:right}
+	#t-bar .card .x:hover{color:var(--fg)}
+	#t-bar .card .foot{margin-top:10px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted-fg)}
+	#t-bar .card .foot button{all:unset;cursor:pointer;color:var(--muted-fg)}
+	#t-bar .card .foot button:hover{color:var(--fg);text-decoration:underline;text-underline-offset:3px}
+	#t-bar .sugs{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+	#t-bar .sugs button{all:unset;cursor:pointer;background:var(--card);border:1px solid var(--border);border-radius:999px;padding:6px 12px;font-size:12.5px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+	#t-bar .sugs button:hover{border-color:var(--brand)}
+	#t-bar .tapprove{box-shadow:0 10px 32px rgba(0,0,0,.14)}
+	#t-say{position:fixed;left:0;top:0;transform:translate(16px,16px);max-width:300px;background:var(--brand);color:#fff;font-size:13px;line-height:1.35;padding:6px 10px;border-radius:4px 12px 12px 12px;box-shadow:0 6px 18px rgba(249,105,60,.35);pointer-events:none;opacity:0;
+		transition:left .7s cubic-bezier(.4,0,.2,1),top .7s cubic-bezier(.4,0,.2,1),opacity .25s}
+	#t-say.on{opacity:1}
+	#t-say .d{display:inline-flex;gap:3px;margin-left:4px;vertical-align:middle}
+	#t-say .d i{width:4px;height:4px;border-radius:50%;background:#fff;animation:tdot 1.2s infinite both}
+	#t-say .d i:nth-child(2){animation-delay:.15s}#t-say .d i:nth-child(3){animation-delay:.3s}`;
+
+	function ensureBar() {
+		if (bar && root.contains(bar)) return;
+		const st = document.createElement("style");
+		st.textContent = CURSOR_CSS;
+		document.head.appendChild(st);
+		bar = el(`<div id="t-bar" hidden>
+			<div class="slot"></div>
+			<div class="pill"><span class="lg">${CRATOR_ICON}</span>
+				<input placeholder="Ask ShowMe how to do something in your ERPNext…" />
+				<button class="ib" data-a="voice" title="Voice">${ICON.mic}</button>
+				<button class="ib" data-a="history" title="History">${ICON.history}</button>
+				<button class="ib" data-a="drawer" title="Full conversation">${ICON.chevUp}</button>
+				<button class="go" data-a="send" title="Send">${ICON.up}</button></div></div>`);
+		say = el(`<div id="t-say"></div>`);
+		root.append(bar, say);
+		const input = bar.querySelector("input");
+		input.addEventListener("keydown", (e) => {
+			e.stopPropagation(); // keep Frappe's shortcuts out of it
+			if (!e.isTrusted) return;
+			if (e.key === "Enter" && input.value.trim()) {
+				emit({ type: "chat", text: input.value.trim(), voice: voiceOn });
+				input.value = "";
+			} else if (e.key === "Escape") {
+				if (drawerOpen) closeDrawer();
+				else input.blur();
+			}
+		});
+		bar.querySelector(".pill").onclick = trusted((e) => {
+			const a = e.target.closest("[data-a]")?.dataset.a;
+			if (a === "send") {
+				if (busy && !input.value.trim()) return bg({ kind: "stop" });
+				if (input.value.trim()) {
+					emit({ type: "chat", text: input.value.trim(), voice: voiceOn });
+					input.value = "";
+				}
+			} else if (a === "voice") setVoice(!voiceOn);
+			else if (a === "history") (drawerOpen && !panel.querySelector("#t-hist").hidden ? closeDrawer() : openDrawer(true));
+			else if (a === "drawer") (drawerOpen ? closeDrawer() : openDrawer(false));
+		});
+	}
+
+	function openDrawer(history) {
+		drawerOpen = true;
+		bar.classList.add("thread");
+		setOpen(true);
+		showHistory(Boolean(history));
+		requestAnimationFrame(() => (msgs.scrollTop = msgs.scrollHeight));
+	}
+
+	function closeDrawer() {
+		drawerOpen = false;
+		bar.classList.remove("thread");
+		setOpen(false);
+	}
+
+	// Narration label on ShowMe's cursor; parks the cursor above the bar while it thinks.
+	function sayAt(text, thinking) {
+		if (!text && !thinking) return say.classList.remove("on");
+		if (cursor.style.display !== "block") {
+			const r = bar.getBoundingClientRect();
+			Object.assign(cursor.style, { display: "block", left: `${innerWidth / 2 - 20}px`, top: `${r.top - 40}px` });
+		}
+		say.innerHTML = `${fmt(text || "Thinking")}${thinking ? `<span class="d"><i></i><i></i><i></i></span>` : ""}`;
+		say.style.left = cursor.style.left;
+		say.style.top = cursor.style.top;
+		// Keep the label on screen near the right edge.
+		say.style.transform = parseFloat(cursor.style.left) > innerWidth - 330 ? "translate(calc(-100% - 8px), 16px)" : "translate(16px,16px)";
+		say.classList.add("on");
+	}
+
+	const lastSentence = (t) => {
+		const s = t.trim().split(/(?<=[.!?…])\s+/).filter(Boolean);
+		return (s[s.length - 1] || "").replace(/\*\*/g, "").slice(0, 160);
+	};
+
+	function renderBar() {
+		if (layout !== "cursor" || !root) return;
+		ensureBar();
+		if (!drawerOpen) bar.hidden = false;
+		const slot = bar.querySelector(".slot");
+		const go = bar.querySelector(".go");
+		go.innerHTML = busy ? ICON.stop : ICON.up;
+		go.title = busy ? "Stop" : "Send";
+		const mic = bar.querySelector('[data-a="voice"]');
+		mic.hidden = !hasVoice;
+		mic.classList.toggle("on", Boolean(live) && !muted);
+
+		// The current task: everything after the last thing the user said.
+		let u = -1;
+		transcript.forEach((m, i) => m.role === "user" && (u = i));
+		const task = transcript.slice(u + 1);
+		slot.innerHTML = "";
+		const pending = task.find((m) => m.role === "approval" && m.status === "pending");
+		if (pending) {
+			slot.appendChild(approvalCard(pending));
+			target = pending.ref ? find(pending.ref) : null; // spotlight what it wants to click
+		} else if (!busy && task.some((m) => m.role === "approval")) target = null;
+
+		if (busy) {
+			const last = task[task.length - 1];
+			const text = last?.role === "assistant" ? lastSentence(last.text) : last?.role === "activity" ? last.text : "";
+			sayAt(text, !text || last?.role === "activity");
+		} else {
+			say.classList.remove("on");
+			const answer = [...task].reverse().find((m) => m.role === "assistant" && m.text.trim());
+			const cost = task.find((m) => m.role === "cost");
+			if (answer && u >= 0) {
+				const c = el(`<div class="card"><button class="x" title="Dismiss">✕</button><div class="tmsg assistant">${md(answer.text.trim())}</div>
+					<div class="foot"><span>${fmt(cost?.text || "")}</span><button>Full conversation</button></div></div>`);
+				c.querySelector(".x").onclick = () => {
+					c.remove();
+					cursor.style.display = "none";
+				};
+				c.querySelector(".foot button").onclick = () => openDrawer(false);
+				slot.appendChild(c);
+			} else if (!transcript.length) {
+				const s = el(`<div class="sugs"></div>`);
+				for (const q of SUGGESTIONS) {
+					const b = el(`<button></button>`);
+					b.textContent = q;
+					b.onclick = trusted(() => emit({ type: "chat", text: q }));
+					s.appendChild(b);
+				}
+				slot.appendChild(s);
+			}
+		}
+	}
 
 	// ---------- 5. Hands: what the agent's clicks and typing actually do ----------
 	// Synthetic pointer/mouse/keyboard events on the real elements. Frappe's handlers (jQuery,
@@ -1074,7 +1254,9 @@
 		for (const type of ["pointerover", "mouseover", "pointerdown", "mousedown"]) fire(t, type, x, y);
 		t.focus?.({ preventScroll: true });
 		for (const type of ["pointerup", "mouseup"]) fire(t, type, x, y);
-		t.click();
+		// The point can land on an icon: SVG elements have no .click(), so dispatch one (it bubbles).
+		if (t instanceof HTMLElement) t.click();
+		else fire(t, "click", x, y);
 	}
 
 	const valueSetter = (el) =>
@@ -1181,6 +1363,7 @@
 	chrome.storage.onChanged.addListener((changes, area) => {
 		if (area === "local" && changes.settings) {
 			hasKey = Boolean(changes.settings.newValue?.anthropicKey);
+			hasVoice = Boolean(changes.settings.newValue?.openaiKey);
 			if (msgs) renderChat();
 		}
 	});
@@ -1188,6 +1371,7 @@
 	if (isDesk()) {
 		bg({ kind: "hello" }).then((r) => {
 			hasKey = r?.hasKey !== false;
+			hasVoice = Boolean(r?.hasVoice);
 			setChat(r?.list || [], Boolean(r?.busy), r?.conv);
 		});
 	}

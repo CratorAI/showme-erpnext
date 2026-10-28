@@ -2,7 +2,7 @@
 // provider). Two stores, versioned from day one:
 //   conversations: the list (id, site, title, timestamps, pinned, cost), indexed by site + updatedAt
 //   transcripts:   one record per conversation, { id, ui, api, frozen }
-//     ui     - what the sidebar shows (and exports); never rewritten, so it stays the full original
+//     ui     - what the thread card shows (and exports); never rewritten, so it stays the full original
 //     api    - the model's history; replaced by a compaction block when a conversation gets long
 //     frozen - the system prompt and tools the conversation started with (changing them mid-conversation
 //              would invalidate the model's earlier reasoning and the prompt cache)

@@ -45,18 +45,18 @@ try {
 	await page.fill("#login_password", ERP_PASS);
 	await page.press("#login_password", "Enter");
 	await page.waitForURL(/\/(app|desk)/, { timeout: 30000 });
-	await page.waitForSelector("#trainer-panel", { timeout: 20000 });
+	await page.waitForSelector("#t-bar input", { state: "visible", timeout: 20000 });
 	for (const [i, q] of QUESTIONS.entries()) {
 		const before = await page.$$eval(".tcost", (els) => els.length);
-		await page.fill("#trainer-panel textarea", q);
-		await page.press("#trainer-panel textarea", "Enter");
+		await page.fill("#t-bar input", q);
+		await page.press("#t-bar input", "Enter");
 		const t0 = Date.now();
 		await page.waitForFunction((n) => document.querySelectorAll(".tcost").length > n, before, { timeout: 240000 }).catch(() => {});
 		const last = await page.$$eval(".tcost", (els) => {
 			const e = els[els.length - 1];
-			return e && { text: e.innerText, calls: (e.dataset.calls || "").split(",").filter(Boolean).map(Number) };
+			return e && { text: e.textContent, calls: (e.dataset.calls || "").split(",").filter(Boolean).map(Number) };
 		});
-		const answer = await page.$$eval(".tmsg.assistant", (els) => (els[els.length - 1]?.innerText || "").slice(0, 160));
+		const answer = await page.$$eval(".tmsg.assistant", (els) => (els[els.length - 1]?.textContent || "").slice(0, 160));
 		report.turns.push({ i: i + 1, q, secs: Math.round((Date.now() - t0) / 1000), cost: last?.text, calls: last?.calls, answer });
 		console.log(`${String(i + 1).padStart(2)} ${String(Math.round((Date.now() - t0) / 1000)).padStart(3)}s  calls=${JSON.stringify(last?.calls)}  ${last?.text}`);
 		writeFileSync(OUT, JSON.stringify(report, null, 1));

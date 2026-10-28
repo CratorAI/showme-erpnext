@@ -148,7 +148,7 @@ function repairHistory(api) {
 
 // ---------- Talking to the page ----------
 
-// content.js (isolated world): cursor, clicks, typing, snapshot, sidebar.
+// content.js (isolated world): cursor, clicks, typing, snapshot, the bar.
 async function toPage(tabId, msg, retry = true) {
 	try {
 		const r = await chrome.tabs.sendMessage(tabId, msg);
@@ -462,8 +462,8 @@ Allowed doctypes: ${CHANGE_DOCTYPES.join(", ")}.
 
 async function executeTool(ctx, name, input) {
 	const { tabId, s, settings, origin, skills } = ctx;
-	const step = (text) => {
-		s.ui.push({ role: "activity", text });
+	const step = (text, extra = {}) => {
+		s.ui.push({ role: "activity", text, ...extra });
 		sync(s);
 	};
 	switch (name) {
@@ -480,6 +480,7 @@ async function executeTool(ctx, name, input) {
 			const label = (await toPage(tabId, { cmd: "labelOf", ref: input.ref })).label || "";
 			if (settings.confirmRisky && RISKY.test(label.trim())) {
 				const { approved, feedback } = await askApproval(tabId, s, {
+					ref: input.ref,
 					title: `Let ShowMe click “${label}”?`,
 					summary:
 						/submit/i.test(label)
@@ -488,12 +489,15 @@ async function executeTool(ctx, name, input) {
 				});
 				if (!approved) return { text: feedback ? `User didn't allow it. They said: "${feedback}"` : "User didn't allow that click. Ask what they'd like instead." };
 			}
-			step(label ? `Clicking “${label}”` : "Clicking");
+			step(label ? `Clicking “${label}”` : "Clicking", { ref: input.ref, target: (label || "Click").replace(/\s*⌘K$/, "") });
 			return { text: (await toPage(tabId, { cmd: "click", ref: input.ref })).text };
 		}
 		case "show_me_type": {
 			const label = (await toPage(tabId, { cmd: "labelOf", ref: input.ref })).label || "";
-			step(`Typing “${input.value}”${label && label !== input.value ? ` into ${label}` : ""}`);
+			// Trail label reads like the path a person follows: what was typed into a search box is the
+			// destination ("New Material Request"); into a field it's "Field: value".
+			const isSearch = /search|type a command|awesome/i.test(label);
+			step(`Typing “${input.value}”${label && label !== input.value ? ` into ${label}` : ""}`, { ref: input.ref, target: isSearch || !label ? input.value : `${label}: ${input.value}` });
 			return { text: (await toPage(tabId, { cmd: "type", ref: input.ref, text: input.value, pick: input.pick_option !== false })).text };
 		}
 		case "run_js": {

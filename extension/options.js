@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const DEFAULTS = {
 	anthropicKey: "", openaiKey: "", model: "claude-sonnet-5-5", voiceModel: "gpt-live-1", voice: "marin",
-	allowChanges: false, confirmRisky: true, keepDays: 90,
+	allowChanges: false, confirmRisky: true, keepDays: 90
 };
 const FIELDS = ["anthropicKey", "openaiKey", "model", "voiceModel", "voice", "keepDays"];
 const CHECKS = ["allowChanges", "confirmRisky"];

@@ -14,7 +14,7 @@ localhost) without installing anything on the server, and runs on **your own API
 
 ![ShowMe raising a purchase request in ERPNext: the user asks in plain words, ShowMe maps it to a Material Request, opens it through search, fills the item, quantity, date and warehouse with a visible cursor, and saves a draft](docs/demo.gif)
 
-<sub>Recorded on ERPNext's demo data with `scripts/record-demo.mjs`; waiting time in the sidebar is shown at 3× speed. That task cost 4.2¢.</sub>
+<sub>Recorded on ERPNext's demo data with `scripts/record-demo.mjs`, in real time except that long unchanged stretches are shortened. That task cost 6¢.</sub>
 
 ## What it does
 
@@ -26,10 +26,19 @@ localhost) without installing anything on the server, and runs on **your own API
 - **Learns your setup, with your OK.** When you mention how your business does things ("we call these
   indents"), it offers to remember it. Nothing is saved until you press **Remember**.
 - **Picks up where you left off.** Conversations are saved per site in your browser, with a History view.
-- **Voice (optional).** Talk to it and it talks back, narrating while the cursor moves. Uses OpenAI's GPT-Live.
+- **Voice (optional).** Talk to it and it talks back, narrating while the cursor moves. Uses OpenAI's GPT-Live;
+  the mic appears in the bar once you add an OpenAI key.
 - **Setup changes, with your approval (optional).** Custom fields, field rules, scripts, notifications,
   workflows. First it checks whether standard ERPNext already does what you want. Each change needs your Apply,
   is logged, can be undone, and is shown to you once applied.
+
+## Why a bar, not a sidebar
+
+ShowMe's job is to make you look at ERPNext, so it stays out of the way. There is no chat panel: a bar at the
+bottom takes your question, a short label next to the cursor says what it is doing as it does it, and the answer
+is one or two lines above the bar. **Full conversation** (or the ⌃ button) opens the whole thread when you want it.
+Measured on the demo recording: the narration sits a median **23 px** from the cursor (a sidebar put it ~650 px
+away), and ShowMe covers about **3%** of the screen while working (the sidebar covered 35%).
 
 ## Install
 
@@ -41,7 +50,8 @@ localhost) without installing anything on the server, and runs on **your own API
    - **OpenAI API key** (optional, for voice), from [platform.openai.com](https://platform.openai.com).
 4. **Turn it on for your site:** open your ERPNext, click the ShowMe icon → **Turn on for this site**.
    Chrome asks for permission for that site only.
-5. Reload the page. The sidebar opens on the desk. **⌘J / Ctrl+J** shows or hides it.
+5. Reload the page. A small ShowMe bar sits at the bottom of the desk: type what you want and press Enter.
+   **⌘J / Ctrl+J** shows or hides it.
 
 Works with ERPNext / Frappe v15 and v16 desks.
 
@@ -90,7 +100,7 @@ your site first.
  Your ERPNext tab                                            Extension service worker
  ┌──────────────────────────────────────────┐               ┌───────────────────────────────────────┐
  │ content.js                               │   messages    │ background.js                          │
- │  • sidebar, History, approval cards      │◀─────────────▶│  • agent loop (agent.js) → Anthropic   │
+ │  • bar, thread card, History, approvals  │◀─────────────▶│  • agent loop (agent.js) → Anthropic   │
  │  • "eyes": snapshot → "e12 textbox …"    │               │  • tools, approvals, change log        │
  │  • "hands": cursor + pointer/key events  │               │  • conversations (store.js, IndexedDB) │
  │  • voice: GPT-Live over WebRTC           │               │  • skills, prices, GPT-Live sessions   │

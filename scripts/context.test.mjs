@@ -39,17 +39,17 @@ try {
 	await page.fill("#login_password", ERP_PASS);
 	await page.press("#login_password", "Enter");
 	await page.waitForURL(/\/(app|desk)/, { timeout: 30000 });
-	await page.waitForSelector("#trainer-panel", { timeout: 20000 });
+	await page.waitForSelector("#t-bar input", { state: "visible", timeout: 20000 });
 
 	const ask = async (text) => {
 		const before = await page.$$eval(".tcost", (e) => e.length);
-		await page.fill("#trainer-panel textarea", text);
-		await page.press("#trainer-panel textarea", "Enter");
+		await page.fill("#t-bar input", text);
+		await page.press("#t-bar input", "Enter");
 		await page.waitForFunction((n) => document.querySelectorAll(".tcost").length > n, before, { timeout: 240000 });
 		await page.waitForTimeout(500);
 		return page.$$eval(".tcost", (els) => {
 			const e = els[els.length - 1];
-			return { text: e.innerText, calls: (e.dataset.calls || "").split(",").filter(Boolean).map(Number), cleared: Number(e.dataset.cleared || 0) };
+			return { text: e.textContent, calls: (e.dataset.calls || "").split(",").filter(Boolean).map(Number), cleared: Number(e.dataset.cleared || 0) };
 		});
 	};
 
@@ -65,12 +65,12 @@ try {
 	}
 	if (MODE === "clear") {
 		check("context editing cleared old tool results server-side", cleared > 0, `${cleared} tokens cleared`);
-		const last = await page.$$eval(".tcost", (els) => els.map((e) => e.innerText));
+		const last = await page.$$eval(".tcost", (els) => els.map((e) => e.textContent));
 		check("caching stays high while clearing", last.every((t) => Number((t.match(/(\d+)% cached/) || [])[1] || 100) >= 75), last.map((t) => (t.match(/\d+% cached/) || [""])[0]).join(", "));
 		throw "done"; // compaction checks don't apply in this mode
 	}
 
-	const notes = await page.$$eval(".tnote", (els) => els.map((e) => e.innerText));
+	const notes = await page.$$eval(".tnote", (els) => els.map((e) => e.textContent));
 	const condensed = notes.some((n) => /condensed/i.test(n));
 	check("conversation was condensed between tasks", condensed, notes.join(" | ") || "no notes");
 
@@ -78,13 +78,15 @@ try {
 		const db = await new Promise((res) => (indexedDB.open("showme").onsuccess = (e) => res(e.target.result)));
 		const all = await new Promise((res) => (db.transaction("transcripts").objectStore("transcripts").getAll().onsuccess = (e) => res(e.target.result)));
 		const t = all[0];
-		return { firstBlock: t.api[0]?.content?.[0]?.type, apiLen: t.api.length, uiUsers: t.ui.filter((m) => m.role === "user").length };
+		const b = t.api[0]?.content?.[0];
+		return { firstBlock: b?.type, summary: b?.content || b?.summary || "", apiLen: t.api.length, uiUsers: t.ui.filter((m) => m.role === "user").length };
 	});
+	if (process.env.DEBUG) console.log("summary:", String(stored.summary).slice(0, 1200));
 	check("model history starts with the signed compaction block", stored.firstBlock === "compaction", `first block: ${stored.firstBlock}, ${stored.apiLen} API messages`);
 	check("visible transcript kept every message", stored.uiUsers === questions.length, `${stored.uiUsers} of ${questions.length} questions still shown`);
 
 	const recall = await ask("From memory, without looking anything up: what was the first thing I asked you, and what was your answer?");
-	const answer = await page.$$eval(".tmsg.assistant", (els) => els[els.length - 1]?.innerText || "");
+	const answer = await page.$$eval(".tmsg.assistant", (els) => els[els.length - 1]?.textContent || "");
 	// Strict: the first request must come back in the user's words, with its answer.
 	check("recalls the first request verbatim, and its answer", recall.calls.length === 1 && /how many customers do we have/i.test(answer) && /\b3\b|three/i.test(answer) && !/can.t be sure/i.test(answer), `${recall.calls.length} call(s): "${answer.slice(0, 160).replace(/\n/g, " ")}"`);
 } catch (e) {

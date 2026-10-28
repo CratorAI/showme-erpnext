@@ -23,7 +23,7 @@ async function render() {
 	$("state").textContent = on ? "on" : "off";
 	$("state").className = on ? "pill ok" : "pill";
 	if (on) {
-		$("explain").textContent = "ShowMe's sidebar opens on this site's desk. ⌘J / Ctrl+J shows or hides it.";
+		$("explain").textContent = "ShowMe's bar sits at the bottom of this site's desk. ⌘J / Ctrl+J shows or hides it.";
 		const off = document.createElement("button");
 		off.textContent = "Turn off for this site";
 		off.onclick = async () => {

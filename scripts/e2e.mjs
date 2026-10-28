@@ -1,5 +1,5 @@
 // End-to-end check: loads the extension into Playwright's Chromium with a throwaway profile, logs in
-// to an ERPNext, sends one message through the real sidebar and prints the transcript.
+// to an ERPNext, sends one message through the real ShowMe bar and prints the transcript.
 //
 //   ANTHROPIC_API_KEY=… ERP_URL=http://localhost:8080 ERP_USER=Administrator ERP_PASS=admin \
 //   ASK="Show me last month's sales invoices" node scripts/e2e.mjs
@@ -48,24 +48,24 @@ try {
 	await page.fill("#login_password", ERP_PASS);
 	await page.press("#login_password", "Enter");
 	await page.waitForURL(/\/(app|desk)/, { timeout: 30000 });
-	await page.waitForSelector("#trainer-panel", { timeout: 20000 });
+	await page.waitForSelector("#t-bar input", { state: "visible", timeout: 20000 });
 
 	for (const text of [ASK, process.env.ASK2].filter(Boolean)) {
-		await page.fill("#trainer-panel textarea", text);
-		await page.press("#trainer-panel textarea", "Enter");
+		await page.fill("#t-bar input", text);
+		await page.press("#t-bar input", "Enter");
 		await page.waitForTimeout(2500);
 		const t0 = Date.now();
 		while (Date.now() - t0 < 240000) {
-			if (process.env.APPROVE && (await page.$(".tapprove.pending .btn"))) await page.click(".tapprove.pending .btn");
-			if (process.env.REJECT && (await page.$(".tapprove.pending .lnk"))) await page.click(".tapprove.pending .lnk");
-			if (!(await page.evaluate(() => document.querySelector("#trainer-panel .send")?.title === "Stop"))) break;
+			if (process.env.APPROVE && ((await page.locator(".tapprove.pending .btn:visible").count()))) await page.locator(".tapprove.pending .btn:visible").first().click();
+			if (process.env.REJECT && ((await page.locator(".tapprove.pending .lnk:visible").count()))) await page.locator(".tapprove.pending .lnk:visible").first().click();
+			if (!(await page.evaluate(() => document.querySelector("#t-bar .go")?.title === "Stop"))) break;
 			await page.waitForTimeout(1500);
 		}
 		console.log(`--- ${text} (${Math.round((Date.now() - t0) / 1000)}s)`);
 	}
 	await page.screenshot({ path: path.join(tmpdir(), "showme-e2e.png") });
 	console.log(
-		(await page.evaluate(() => [...document.querySelectorAll("#trainer-msgs > *")].map((e) => "• " + e.innerText.replace(/\n+/g, " | ")).join("\n")))
+		(await page.evaluate(() => [...document.querySelectorAll("#trainer-msgs > *")].map((e) => "• " + e.textContent.replace(/\n+/g, " | ")).join("\n")))
 	);
 	console.log(`screenshot: ${path.join(tmpdir(), "showme-e2e.png")}`);
 	const sw2 = ctx.serviceWorkers()[0];

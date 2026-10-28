@@ -44,32 +44,42 @@ async function launch() {
 		await page.press("#login_password", "Enter");
 		await page.waitForURL(/\/(app|desk)/, { timeout: 30000 });
 	}
-	await page.waitForSelector("#trainer-panel", { timeout: 20000 });
+	await page.waitForSelector("#t-bar input", { state: "visible", timeout: 20000 });
 	return { ctx, page, sw };
 }
 
 // Send a message and wait for its cost line; answer approval cards with `onCard` if given.
 async function ask(page, text, onCard) {
 	const before = await page.$$eval(".tcost", (e) => e.length);
-	await page.fill("#trainer-panel textarea", text);
-	await page.press("#trainer-panel textarea", "Enter");
+	await page.fill("#t-bar input", text);
+	await page.press("#t-bar input", "Enter");
 	const t0 = Date.now();
 	let card = null;
 	while (Date.now() - t0 < 240000) {
-		const pending = await page.$(".tapprove.pending");
-		if (pending && onCard && !card) {
-			card = { title: await pending.$eval(".qt", (e) => e.innerText), body: await pending.$eval(".qd", (e) => e.innerText) };
-			await onCard(pending, card);
-		}
-		if ((await page.$$eval(".tcost", (e) => e.length)) > before) break;
+		try {
+			const pending = page.locator(".tapprove.pending:visible").first();
+			if (onCard && !card && (await pending.count())) {
+				card = { title: await pending.locator(".qt").innerText(), body: await pending.locator(".qd").innerText() };
+				await onCard(pending, card);
+			}
+			if ((await page.$$eval(".tcost", (e) => e.length)) > before) break;
+		} catch {} // the agent navigated mid-check; look again
 		await page.waitForTimeout(800);
 	}
 	const last = await page.$$eval(".tcost", (els) => {
 		const e = els[els.length - 1];
-		return { text: e?.innerText, calls: (e?.dataset.calls || "").split(",").filter(Boolean).map(Number) };
+		return { text: e?.textContent, calls: (e?.dataset.calls || "").split(",").filter(Boolean).map(Number) };
 	});
-	const answer = await page.$$eval(".tmsg.assistant", (els) => els[els.length - 1]?.innerText || "");
+	const answer = await page.$$eval(".tmsg.assistant", (els) => els[els.length - 1]?.textContent || "");
 	return { ...last, answer, card };
+}
+
+// Start a new conversation the way a user would: open the thread card, press New, close it.
+async function newConversation(page) {
+	await page.click('#t-bar [data-a="drawer"]');
+	await page.click("#t-new");
+	await page.keyboard.press("Escape");
+	await page.waitForTimeout(500);
 }
 
 const skills = (sw) => sw.evaluate(() => chrome.storage.local.get("skills").then((x) => x.skills || []));
@@ -79,12 +89,12 @@ try {
 	let { ctx, page } = await launch();
 	const first = await ask(page, "How many suppliers do we have? Just the number and their names.");
 	await page.waitForTimeout(4000); // let the title come back
-	const title = await page.$eval("#t-title", (e) => e.innerText);
+	const title = await page.$eval("#t-title", (e) => e.textContent);
 	await ctx.close();
 
 	({ ctx, page } = await launch());
 	await page.waitForTimeout(1500);
-	const restored = await page.$$eval(".tmsg.assistant", (els) => els.map((e) => e.innerText).join(" "));
+	const restored = await page.$$eval(".tmsg.assistant", (els) => els.map((e) => e.textContent).join(" "));
 	check("transcript restored after browser restart", /supplier/i.test(restored), `title "${title}"`);
 	const recall = await ask(page, "What did I ask you before this, and what was the answer? Answer from memory; don't look anything up.");
 	const supplierCount = (first.answer.match(/\b(\d+)\s+suppliers?\b/i) || [])[1];
@@ -113,13 +123,13 @@ try {
 		await new Promise((r) => (t.oncomplete = r));
 	}, origin);
 	const t0 = Date.now();
-	await page.click("#t-history");
+	await page.click('#t-bar [data-a="history"]');
 	await page.waitForFunction(() => document.querySelectorAll("#t-hist .it").length >= 100, null, { timeout: 10000 });
 	const ms = Date.now() - t0;
 	const est = await sw.evaluate(() => navigator.storage.estimate());
 	check("History lists 100+ conversations in under 500 ms", ms < 500, `${ms} ms`);
 	check("100 conversations stay well under quota", est.usage < est.quota * 0.01, `${(est.usage / 1e6).toFixed(1)} MB of ${(est.quota / 1e9).toFixed(0)} GB`);
-	await page.click("#t-history");
+	await page.click('#t-bar [data-a="history"]');
 	await sw.evaluate(async () => {
 		const db = await new Promise((res) => (indexedDB.open("showme").onsuccess = (e) => res(e.target.result)));
 		const t = db.transaction(["conversations", "transcripts"], "readwrite");
@@ -133,22 +143,38 @@ try {
 	// ---------- 3. Setup memory ----------
 	const notes = async () => (await skills(sw)).find((s) => s.name === "site-notes" && s.scope === origin)?.content || "";
 	const before = await notes();
-	await page.click("#t-new");
+	await newConversation(page);
 	await page.waitForTimeout(500);
 	const declined = await ask(page, "By the way, here we call customers 'parties'. How many parties do we have?", async (card) => {
-		await card.$eval(".lnk", (b) => b.click()); // Cancel
+		await card.locator(".lnk").click(); // Cancel (a real click)
 	});
 	check("declined memory card saves nothing", (await notes()) === before, declined.card ? `card: "${declined.card.body.split("\n")[0]}"` : "no card was proposed");
 
-	await page.click("#t-new");
+	await newConversation(page);
 	await page.waitForTimeout(500);
 	const approved = await ask(page, "Note for the future: in our company 'indent' means a Material Request of type Purchase. How many indents do we have?", async (card) => {
-		await card.$eval(".btn", (b) => b.click()); // Remember
+		await card.locator(".btn").click(); // Remember (a real click)
 	});
 	const after = await notes();
 	const fact = approved.card?.body.split("\n")[0].trim();
 	check("a card was proposed for a stated fact", Boolean(approved.card), approved.card ? `"${approved.card.title}"` : "none");
 	check("approved fact saved exactly as shown", Boolean(fact) && after.includes(fact) && after !== before, fact ? `"${fact}"` : "");
+	// ---------- 4. Page scripts can't press ShowMe's buttons ----------
+	await newConversation(page);
+	await page.waitForTimeout(500);
+	await page.fill("#t-bar input", "Open the most recent draft Material Request and click Submit on it.");
+	await page.press("#t-bar input", "Enter");
+	const card = await page.waitForSelector("#t-bar .tapprove.pending .btn", { timeout: 240000 }).catch(() => null);
+	if (!card) check("approval card appears for Submit", false, "no card");
+	else {
+		await page.evaluate(() => document.querySelector("#t-bar .tapprove.pending .btn").click()); // synthetic, as a page script would
+		await page.waitForTimeout(3000);
+		check("a page script's click on Allow is ignored", Boolean(await page.$("#t-bar .tapprove.pending")), "card still pending after untrusted click");
+		await page.click("#t-bar .tapprove.pending .lnk"); // a real click on Cancel
+		await page.waitForFunction(() => !document.querySelector(".tapprove.pending"), null, { timeout: 15000 }).catch(() => {});
+		check("a real click on Cancel works", !(await page.$(".tapprove.pending")), "");
+		await page.waitForSelector(".tcost", { timeout: 120000 }).catch(() => {});
+	}
 	await ctx.close();
 } catch (e) {
 	check("test run", false, e.message);

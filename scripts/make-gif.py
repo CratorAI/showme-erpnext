@@ -3,7 +3,7 @@
     python3 scripts/make-gif.py /tmp/showme-frames docs/demo.gif [--width 960] [--max-hold 0.7]
 
 Keeps real timing for what happens on the ERPNext page (cursor, typing, forms), plays changes that are only
-inside ShowMe's sidebar (thinking shimmer, streaming text) faster, and caps how long an unchanged screen is held.
+inside a strip on the right (e.g. a chat panel; off by default) faster, and caps how long an unchanged screen is held.
 Needs Pillow.
 """
 
@@ -19,8 +19,8 @@ ap.add_argument("out")
 ap.add_argument("--width", type=int, default=960)
 ap.add_argument("--max-hold", type=float, default=0.7, help="seconds an unchanged screen is shown at most")
 ap.add_argument("--fps", type=float, default=10, help="upper bound on frames per second")
-ap.add_argument("--sidebar-speed", type=float, default=3, help="speed-up for changes only inside the sidebar")
-ap.add_argument("--sidebar-px", type=int, default=380, help="sidebar width in the recording's pixels")
+ap.add_argument("--sidebar-speed", type=float, default=3, help="speed-up for changes only inside that strip")
+ap.add_argument("--sidebar-px", type=int, default=0, help="width of that strip in the recording's pixels (0 = off)")
 args = ap.parse_args()
 
 meta = json.loads((pathlib.Path(args.frames) / "frames.json").read_text())
