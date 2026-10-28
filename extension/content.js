@@ -1,4 +1,4 @@
-// Crator for ERPNext: content script (runs in the page, in the extension's isolated world).
+// ShowMe for ERPNext: content script (runs in the page, in the extension's isolated world).
 //  1. The sidebar: chat, steps, approval cards, voice.
 //  2. The agent's eyes: snapshot() lists what's on screen as ref-tagged lines ("e12 textbox …").
 //  3. The agent's hands: an animated cursor, then real-looking pointer/mouse/keyboard events.
@@ -116,6 +116,8 @@
 		speakerOff: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/></svg>`,
 		plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`,
 		gear: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`,
+		history: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>`,
+		pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M9 10.8V4h6v6.8l3 3.2H6z"/></svg>`,
 		stop: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>`,
 		check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
 	};
@@ -162,6 +164,28 @@
 	.ticonbtn:hover{background:var(--muted);color:var(--fg)}
 	.ticonbtn svg{width:16px;height:16px}
 
+	#trainer-panel header .hd{min-width:0;display:flex;flex-direction:column;line-height:1.2}
+	#trainer-panel header .hd .s{margin-left:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+	#t-history.on{color:var(--fg);background:var(--muted)}
+	#t-hist{flex:1;overflow-y:auto;padding:12px 8px}
+	#t-hist .hh{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 10px}
+	#t-hist .hh b{font-weight:600;font-size:14px}
+	#t-hist .priv{font-size:12px;color:var(--muted-fg);padding:0 8px 10px}
+	#t-hist .it{display:flex;align-items:center;gap:8px;padding:8px;border-radius:10px;cursor:pointer}
+	#t-hist .it:hover{background:var(--muted)}
+	#t-hist .it.cur{background:var(--muted)}
+	#t-hist .it .tx{flex:1;min-width:0}
+	#t-hist .it .tt{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+	#t-hist .it .mt{font-size:12px;color:var(--muted-fg)}
+	#t-hist .it .ac{display:none;gap:2px}
+	#t-hist .it:hover .ac{display:flex}
+	#t-hist .it .ac button{all:unset;cursor:pointer;font-size:12px;color:var(--muted-fg);padding:2px 5px;border-radius:6px}
+	#t-hist .it .ac button:hover{color:var(--fg);background:var(--card)}
+	#t-hist .pinned svg{width:12px;height:12px;color:var(--muted-fg)}
+	#t-hist .empty{color:var(--muted-fg);font-size:13px;padding:8px}
+	.tnote{font-size:12px;color:var(--muted-fg);font-style:italic;text-align:center;padding:0 12px}
+	.tmsg.user.queued{opacity:.55}
+	.tapprove .qx{margin-top:8px;font-size:12px;color:var(--muted-fg)}
 	#trainer-msgs{flex:1;overflow-y:auto;padding:20px 16px 8px;display:flex;flex-direction:column;gap:16px}
 	.tmsg{font-size:14px;line-height:1.625;word-wrap:break-word}
 	.tmsg.user{align-self:flex-end;max-width:85%;white-space:pre-wrap;background:var(--user);border-radius:10px;padding:12px}
@@ -303,18 +327,20 @@
 				<div class="thinking">Thinking…</div>
 			</div>
 			<aside id="trainer-panel">
-				<header><div class="logo">${CRATOR_ICON}</div><div class="t">Crator</div><div class="s">ERPNext assistant</div>
-					<button class="ticonbtn" id="t-new" title="New chat">${ICON.plus}</button>
+				<header><div class="logo">${CRATOR_ICON}</div><div class="hd"><div class="t">ShowMe</div><div class="s" id="t-title">Your ERPNext guide</div></div>
+					<button class="ticonbtn" id="t-history" title="History">${ICON.history}</button>
+					<button class="ticonbtn" id="t-new" title="New conversation">${ICON.plus}</button>
 					<button class="ticonbtn" id="t-settings" title="Settings and skills">${ICON.gear}</button>
-					<button class="ticonbtn" id="t-voice" title="Voice (GPT-Live): talk to Crator">${ICON.speakerOff}</button>
+					<button class="ticonbtn" id="t-voice" title="Voice (GPT-Live): talk to ShowMe">${ICON.speakerOff}</button>
 					<button class="ticonbtn" id="t-close" title="Hide (⌘J)">${ICON.x}</button></header>
 				<div id="trainer-msgs"></div>
-				<form><div class="composer"><textarea placeholder="Ask Crator to do something…"></textarea>
+				<div id="t-hist" hidden></div>
+				<form><div class="composer"><textarea placeholder="Ask how to do something in your ERPNext…"></textarea>
 					<div class="cbar"><span class="hint">⌘J to hide</span><div class="cbtns">
 						<button type="button" class="mic" id="t-mic" title="Talk (or hold Space in voice mode)">${ICON.mic}<span class="ring"></span></button>
 						<button class="send" title="Send">${ICON.up}</button></div></div></div></form>
 			</aside>
-			<button id="trainer-launch" title="Crator (⌘J)">${CRATOR_ICON}</button>
+			<button id="trainer-launch" title="ShowMe (⌘J)">${CRATOR_ICON}</button>
 			<svg id="trainer-cursor" viewBox="0 0 24 24"><path d="M4 2l16 9-7 2-3 7z" fill="#f9693c" stroke="#fff" stroke-width="1.5"/></svg>
 			<div id="trainer-ripple"></div>`;
 		document.body.appendChild(root);
@@ -352,8 +378,10 @@
 		panel.querySelector("#t-settings").onclick = () => bg({ kind: "open-settings" });
 		panel.querySelector("#t-new").onclick = () => {
 			openGroups.clear();
+			showHistory(false);
 			bg({ kind: "new-chat" });
 		};
+		panel.querySelector("#t-history").onclick = () => showHistory(panel.querySelector("#t-hist").hidden);
 		panel.querySelector("#t-voice").onclick = () => setVoice(!voiceOn);
 		panel.querySelector("#t-mic").onclick = () => toggleMute();
 		root.querySelector("#trainer-launch").onclick = () => setOpen(true);
@@ -452,17 +480,18 @@
 		const d = el(`<div class="tapprove ${m.status}"><div class="qh">
 			<div class="qt">${fmt(m.title || "Apply this change to your ERPNext?")}</div>
 			<div class="qd">${md(m.summary)}</div>
-			${m.changes?.length ? `<ul class="ql">${m.changes.map(what).join("")}</ul>` : ""}</div>
+			${m.changes?.length ? `<ul class="ql">${m.changes.map(what).join("")}</ul>` : ""}
+			${m.detail ? `<div class="qx">${fmt(m.detail)}</div>` : ""}</div>
 			<div class="qf"></div></div>`);
 		const foot = d.querySelector(".qf");
 		if (m.status === "pending") {
 			const cancel = el(`<button class="lnk">Cancel</button>`);
 			cancel.onclick = () => emit({ type: "reject", id: m.id });
-			const apply = el(`<button class="btn">${m.kind === "change" ? "Apply" : "Allow"}</button>`);
+			const apply = el(`<button class="btn">${{ change: "Apply", memory: "Remember" }[m.kind] || "Allow"}</button>`);
 			apply.onclick = () => emit({ type: "approve", id: m.id });
 			foot.append(cancel, apply);
 		} else {
-			const label = { applying: "Applying…", applied: "Applied", approved: "Allowed", cancelled: "Cancelled", failed: "Failed, nothing changed" }[m.status];
+			const label = { applying: "Applying…", applied: "Applied", approved: m.kind === "memory" ? "Saved to site notes" : "Allowed", cancelled: m.kind === "memory" ? "Not saved" : "Cancelled", failed: "Failed, nothing changed" }[m.status];
 			const ok = m.status === "applied" || m.status === "approved";
 			foot.appendChild(el(`<span class="qs">${ok ? ICON.check : ""}<span class="${m.status === "applying" ? "cdx-shimmer" : ""}">${label}</span></span>`));
 			if (m.status === "applied") {
@@ -650,14 +679,14 @@
 		msgs.innerHTML = "";
 		if (!transcript.length && !hasKey) {
 			const e = el(`<div class="tempty"><h3>Almost there</h3>
-				<p>Crator runs on your own Anthropic API key, stored only in this browser. Add it in settings, plus an OpenAI key if you want voice.</p></div>`);
+				<p>ShowMe runs on your own Anthropic API key, stored only in this browser. Add it in settings, plus an OpenAI key if you want voice.</p></div>`);
 			const b = el(`<button class="sugg">Open settings</button>`);
 			b.onclick = () => bg({ kind: "open-settings" });
 			e.appendChild(b);
 			msgs.appendChild(e);
 		} else if (!transcript.length) {
 			const e = el(`<div class="tempty"><h3>What do you want to do?</h3>
-				<p>Say it in your own words. Crator does it on this screen, so you see where everything lives, and can change how ERPNext is set up when something's missing.</p></div>`);
+				<p>Setting up ERPNext yourself? Ask in your own words. ShowMe does it on this screen so you see where everything lives, and learns how your business works as you go.</p></div>`);
 			for (const s of SUGGESTIONS) {
 				const b = el(`<button class="sugg"></button>`);
 				b.textContent = s;
@@ -674,9 +703,16 @@
 				while (i < transcript.length && transcript[i].role === "activity") items.push(transcript[i++]);
 				i--;
 				msgs.appendChild(enter(activityGroup(items, start, busy && i === transcript.length - 1), `g${start}`));
+			} else if (m.role === "note") {
+				msgs.appendChild(enter(el(`<div class="tnote">${fmt(m.text)}</div>`), `n${i}`));
 			} else if (m.role === "cost") {
 				const c = el(`<div class="tcost">${fmt(m.text)}</div>`);
 				c.title = m.note || "Estimated cost of this task on your API key";
+				if (m.calls) c.dataset.calls = m.calls.join(",");
+				if (m.cleared) {
+					c.dataset.cleared = m.cleared;
+					c.title += `\nOld screen readings cleared server-side to keep this fast (${m.cleared.toLocaleString()} tokens).`;
+				}
 				msgs.appendChild(enter(c, `c${i}`));
 			} else if (m.role === "approval") {
 				const c = enter(approvalCard(m), `a${i}`);
@@ -685,8 +721,9 @@
 			} else if (m.role === "assistant") {
 				if (m.text.trim()) msgs.appendChild(enter(el(`<div class="tmsg assistant">${md(m.text.trim())}</div>`), `m${i}`));
 			} else {
-				const u = el(`<div class="tmsg user"></div>`);
+				const u = el(`<div class="tmsg user${m.queued ? " queued" : ""}"></div>`);
 				u.textContent = m.text;
+				if (m.queued) u.title = "Waiting for the current task to finish";
 				msgs.appendChild(enter(u, `m${i}`));
 			}
 		}
@@ -700,8 +737,20 @@
 		voiceSync();
 	}
 
-	function setChat(list, isBusy) {
+	let convId = null;
+	function setChat(list, isBusy, conv) {
 		ensureUI();
+		if (conv) {
+			if (conv.id !== convId) {
+				// Different conversation: indices mean something else now. No entrance animations, nothing re-voiced.
+				convId = conv.id;
+				seen.clear();
+				openGroups.clear();
+				sentUpTo.clear();
+				voicePrimed = false;
+			}
+			panel.querySelector("#t-title").textContent = conv.title && conv.title !== "New conversation" ? conv.title : "Your ERPNext guide";
+		}
 		transcript = list;
 		busy = isBusy;
 		// The daemon replays the whole transcript after every page load: treat that first sync as
@@ -713,6 +762,70 @@
 			voicePrimed = true;
 		}
 		renderChat();
+	}
+
+	// ---------- History ----------
+
+	const ago = (t) => {
+		const s = (Date.now() - t) / 1000;
+		if (s < 60) return "just now";
+		if (s < 3600) return `${Math.round(s / 60)} min ago`;
+		if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+		return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+	};
+
+	async function showHistory(open) {
+		const box = panel.querySelector("#t-hist");
+		panel.querySelector("#t-history").classList.toggle("on", open);
+		box.hidden = !open;
+		msgs.hidden = open;
+		panel.querySelector("form").hidden = open;
+		if (!open) return renderChat();
+		const { items = [] } = await bg({ kind: "list-conversations" });
+		items.sort((a, b) => (b.pinned - a.pinned) || (b.updatedAt - a.updatedAt));
+		box.innerHTML = "";
+		const head = el(`<div class="hh"><b>Conversations</b></div>`);
+		const nw = el(`<button class="lnk" style="all:unset;cursor:pointer;font-size:13px;color:var(--brand)">+ New</button>`);
+		nw.onclick = () => panel.querySelector("#t-new").click();
+		head.appendChild(nw);
+		box.append(head, el(`<div class="priv">Saved only in this browser, for this site. Never synced.</div>`));
+		if (!items.length) box.appendChild(el(`<div class="empty">No saved conversations yet.</div>`));
+		for (const it of items) {
+			const row = el(`<div class="it${it.current ? " cur" : ""}">
+				<div class="tx"><div class="tt"></div><div class="mt">${ago(it.updatedAt)}${it.usd ? ` · ${it.usd < 0.01 ? "<1¢" : it.usd < 1 ? `${Math.round(it.usd * 100)}¢` : `$${it.usd.toFixed(2)}`}` : ""}</div></div>
+				${it.pinned ? `<span class="pinned">${ICON.pin}</span>` : ""}
+				<div class="ac"><button data-a="pin">${it.pinned ? "Unpin" : "Pin"}</button><button data-a="rename">Rename</button><button data-a="export">Export</button><button data-a="delete">Delete</button></div></div>`);
+			row.querySelector(".tt").textContent = it.title;
+			row.onclick = async (e) => {
+				const a = e.target.dataset?.a;
+				e.stopPropagation();
+				if (a === "pin") await bg({ kind: "pin-conversation", id: it.id });
+				else if (a === "rename") {
+					const t = prompt("Rename conversation", it.title);
+					if (t) await bg({ kind: "rename-conversation", id: it.id, title: t });
+				} else if (a === "export") {
+					const r = await bg({ kind: "export-conversation", id: it.id });
+					if (r?.markdown) {
+						const url = URL.createObjectURL(new Blob([r.markdown], { type: "text/markdown" }));
+						const link = Object.assign(document.createElement("a"), { href: url, download: r.filename });
+						document.body.appendChild(link);
+						link.click();
+						link.remove();
+						setTimeout(() => URL.revokeObjectURL(url), 2000);
+					}
+					return;
+				} else if (a === "delete") {
+					if (!confirm(`Delete "${it.title}"? This can't be undone.`)) return;
+					const r = await bg({ kind: "delete-conversation", id: it.id });
+					if (r?.error) return alert(r.error);
+				} else {
+					await bg({ kind: "open-conversation", id: it.id });
+					return showHistory(false);
+				}
+				showHistory(true);
+			};
+			box.appendChild(row);
+		}
 	}
 
 	// Inline markdown: **bold**, `code`, *italic*.
@@ -1011,7 +1124,7 @@
 				case "ping":
 					return { ok: isDesk() };
 				case "setChat":
-					if (isDesk()) setChat(msg.list, msg.busy);
+					if (isDesk()) setChat(msg.list, msg.busy, msg.conv);
 					return {};
 				case "snapshot":
 					return { text: snapshot(msg.max || 150) };
@@ -1056,7 +1169,7 @@
 	if (isDesk()) {
 		bg({ kind: "hello" }).then((r) => {
 			hasKey = r?.hasKey !== false;
-			setChat(r?.list || [], Boolean(r?.busy));
+			setChat(r?.list || [], Boolean(r?.busy), r?.conv);
 		});
 	}
 

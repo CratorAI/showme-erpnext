@@ -1,40 +1,43 @@
-# Crator for ERPNext
+# ShowMe for ERPNext
 
-**An AI copilot that lives inside your ERPNext.** Ask in plain words ("raise a purchase request for 100 kg of
-steel", "which customers owe us money?") and watch it happen on your screen: an animated cursor opens the right
-page, fills the form and saves the draft, while it explains each step. Talk to it if you like. When something's
-missing from your setup, it proposes the change, applies it after you approve, and shows it to you.
+**The AI guide for people self-implementing ERPNext.**
+
+More and more businesses set up ERPNext themselves, often with AI doing the configuration. What gets lost is the
+consultant who used to sit next to you and *show you around*: where things live, what your words are called in
+the system, why a field matters. ShowMe is that walkthrough. Ask in your own words ("raise a purchase request for
+100 kg of steel", "which customers owe us money?") and watch it happen on your screen: an animated cursor opens
+the right page, fills the form and saves the draft, narrating as it goes. Over time it learns how *your* business
+uses ERPNext.
 
 It's a Chrome extension. It works with **any ERPNext you can open in Chrome** (Frappe Cloud, self-hosted,
-localhost) without installing anything on the server. It runs on **your own API keys**; nothing passes through
-a third-party server.
+localhost) without installing anything on the server, and runs on **your own API keys**.
 
 <!-- TODO: demo GIF recorded on a demo site (no customer data) -->
 
 ## What it does
 
-- **Does it on screen, so you learn where things live.** It uses ERPNext's own screens with a visible cursor,
-  not hidden API calls. It finds pages through the search bar the way you would.
-- **Translates your words.** "Purchase request" becomes **Material Request**, "GRN" becomes **Purchase
-  Receipt**, and so on. It says the mapping once, then gets on with it.
+- **Shows you, on your screen.** It uses ERPNext's own screens with a visible cursor, not hidden API calls, and
+  finds pages the way you would (the search bar), so you learn where things live.
+- **Speaks your language.** "Purchase request" becomes **Material Request**, "GRN" becomes **Purchase Receipt**,
+  "godown" becomes **Warehouse**. It says the mapping once, then gets on with it.
 - **Answers questions about your data.** It opens the relevant list or report, reads the numbers and states them.
-- **Voice (optional).** Talk to it and it talks back, narrating while the cursor moves. You can interrupt it.
-  Uses OpenAI's GPT-Live.
-- **Setup changes, with your approval (optional).** Custom fields, field rules, client and server scripts,
-  notifications, workflows. First it checks whether standard ERPNext already does what you want. Each change
-  shows an Apply / Cancel card, is logged, can be undone, and is demonstrated on screen once applied.
-- **Knows your business through skills.** Add markdown files (like a `SKILL.md`) that describe how *your*
-  ERPNext is set up: your names, warehouses, rules, custom fields. See [`examples/skills`](examples/skills).
+- **Learns your setup, with your OK.** When you mention how your business does things ("we call these
+  indents"), it offers to remember it. Nothing is saved until you press **Remember**.
+- **Picks up where you left off.** Conversations are saved per site in your browser, with a History view.
+- **Voice (optional).** Talk to it and it talks back, narrating while the cursor moves. Uses OpenAI's GPT-Live.
+- **Setup changes, with your approval (optional).** Custom fields, field rules, scripts, notifications,
+  workflows. First it checks whether standard ERPNext already does what you want. Each change needs your Apply,
+  is logged, can be undone, and is shown to you once applied.
 
 ## Install
 
-1. **Get the code:** `git clone https://github.com/<org>/crator-for-erpnext` (or download the ZIP and unzip it).
+1. **Get the code:** `git clone https://github.com/CratorAI/showme-erpnext` (or download the ZIP and unzip it).
 2. **Load it in Chrome:** open `chrome://extensions`, turn on **Developer mode** (top right), click **Load
    unpacked** and choose the `extension` folder.
-3. **Add your keys:** click the Crator icon → **Settings, keys & skills**.
+3. **Add your keys:** click the ShowMe icon → **Settings, keys & skills**.
    - **Anthropic API key** (required), from [console.anthropic.com](https://console.anthropic.com).
    - **OpenAI API key** (optional, for voice), from [platform.openai.com](https://platform.openai.com).
-4. **Turn it on for your site:** open your ERPNext, click the Crator icon → **Turn on for this site**.
+4. **Turn it on for your site:** open your ERPNext, click the ShowMe icon → **Turn on for this site**.
    Chrome asks for permission for that site only.
 5. Reload the page. The sidebar opens on the desk. **⌘J / Ctrl+J** shows or hides it.
 
@@ -55,8 +58,16 @@ description: How we buy raw material and who approves it
 - Customer has a custom field `credit_days`; respect it in payment terms.
 ```
 
-Each skill applies to all sites or to one site. Small skill sets go straight into the agent's instructions.
-For larger ones, the agent gets an index and reads a skill when it's relevant.
+Each skill applies to all sites or to one site. Facts ShowMe learns in conversation (after you press Remember) go
+into a `site-notes` skill you can edit or delete. See [`examples/skills`](examples/skills).
+
+## Conversations and privacy
+
+- Conversations are stored **only in this browser** (IndexedDB), per site. Never synced, never sent anywhere except
+  to the model provider while you're using them. They can contain data from your ERPNext.
+- History lets you resume, rename, pin, export (Markdown) or delete. Settings has a retention period (90 days by
+  default; pinned conversations are kept) and delete-all.
+- A new tab on the same site picks up your latest conversation if it's recent.
 
 ## Safety
 
@@ -67,10 +78,8 @@ your site first.
   Amend** always shows an approval card first (you can turn this off in settings).
 - **Setup changes are off by default.** When you turn them on, every change needs your Apply, is all-or-nothing,
   is listed in settings, and can be undone by asking ("undo that change").
-- **Your keys** stay in this browser's extension storage (`chrome.storage.local`) and are sent only to
-  `api.anthropic.com` / `api.openai.com`.
-- **Your data:** what the agent reads (screen summaries, query results) goes to Anthropic, and to OpenAI if you
-  use voice, under your own accounts and their API data policies.
+- **Your keys** stay in this browser's extension storage and are sent only to `api.anthropic.com` /
+  `api.openai.com`.
 - **Only on sites you turn on.** The extension asks for permission per site.
 
 ## How it works
@@ -79,44 +88,54 @@ your site first.
  Your ERPNext tab                                            Extension service worker
  ┌──────────────────────────────────────────┐               ┌───────────────────────────────────────┐
  │ content.js                               │   messages    │ background.js                          │
- │  • sidebar, approval cards, animations   │◀─────────────▶│  • agent loop (agent.js) → Anthropic   │
+ │  • sidebar, History, approval cards      │◀─────────────▶│  • agent loop (agent.js) → Anthropic   │
  │  • "eyes": snapshot → "e12 textbox …"    │               │  • tools, approvals, change log        │
- │  • "hands": cursor + pointer/key events  │               │  • skills, site context (prompts.js)   │
- │  • voice: GPT-Live over WebRTC           │               │  • creates GPT-Live sessions → OpenAI  │
+ │  • "hands": cursor + pointer/key events  │               │  • conversations (store.js, IndexedDB) │
+ │  • voice: GPT-Live over WebRTC           │               │  • skills, prices, GPT-Live sessions   │
  └──────────────────────────────────────────┘               └───────────────────────────────────────┘
           ▲  Frappe's JS API (frappe, cur_frm) via chrome.scripting in the page's main world
 ```
 
 - **Seeing:** the page is summarised as one line per visible control with a short ref, its label, field name
-  and value. That's much smaller than HTML and enough for the model to act on.
-- **Acting:** an animated cursor glides to the element, then real-looking pointer, mouse and keyboard events
-  fire, so Frappe's own handlers (autocomplete, grid editing, the router) react as they would to a person.
-  For fiddly widgets and for reading data it uses Frappe's client API (`frappe.db.get_list`,
-  `cur_frm.set_value`, report filters).
-- **Thinking:** a small tool-use loop over the Messages API (Claude Sonnet by default), with prompt caching
-  and old screen summaries trimmed to keep long sessions cheap.
-- **Voice:** GPT-Live handles the conversation. When you ask for something, it hands the task to the agent
-  (client delegation), and the agent's step-by-step narration flows back for it to say aloud.
+  and value. Much smaller than HTML, and enough to act on.
+- **Acting:** an animated cursor glides to the element, then real-looking pointer, mouse and keyboard events fire,
+  so Frappe's own handlers (autocomplete, grid editing, the router) react as they would to a person. For fiddly
+  widgets and for reading data it uses Frappe's client API. Failed Frappe calls come back to the agent as errors
+  instead of popping up on your screen.
+- **Thinking:** a tool-use loop over the Messages API (Claude Sonnet by default) with prompt caching. The history
+  is append-only: old screen readings are cleared **server-side** (context editing) and long conversations are
+  condensed between tasks (on-demand compaction). The prompt and tools are fixed per conversation, which keeps the
+  cache warm and the model's earlier reasoning valid; new settings and skills apply to new conversations.
+- **Voice:** GPT-Live handles the conversation and hands each task to the agent (client delegation); the agent's
+  narration flows back for it to say aloud.
 
 ## Costs
 
-You pay your providers directly, and Crator shows what each task cost right under the answer
-(e.g. `2.8¢ · 23k tokens · 70% cached · 5 steps`), with monthly totals per site in settings.
+You pay your providers directly. ShowMe shows what each task cost under the answer
+(e.g. `1.5¢ · 62k tokens · 97% cached · 2 steps`), with monthly totals per site in settings. Prices come from
+[LiteLLM's price list](https://github.com/BerriAI/litellm), refreshed daily: an estimate, not your invoice.
 
-On Claude Sonnet 5.5, answering a data question measured 1.5–3¢. Filling and saving a form (an estimate,
-10–15 steps) should be roughly 5–10¢. Prompt caching keeps follow-ups cheap. Voice (GPT-Live) is billed per minute
-by OpenAI; Crator counts the minutes. Prices live in [`extension/pricing.js`](extension/pricing.js).
+Measured on Claude Sonnet 5.5 with `scripts/long-session.mjs` (30 questions in one conversation): **$0.80 in
+total, 2.6¢ per question on average**, with a median **97% of the prompt served from cache**. Simple data questions
+are often under 1¢; a question that opens a report or a long list costs 2–7¢.
+
+Voice (GPT-Live) is billed per minute by OpenAI; ShowMe counts the minutes.
 
 ## Development
 
 No build step: edit the files in `extension/` and click reload on `chrome://extensions`.
 
-End-to-end check against a real site (loads the extension in Playwright's Chromium with a throwaway profile):
+Tests run against a real ERPNext, loading the extension into Playwright's Chromium with a throwaway profile:
 
 ```bash
 npm install && npx playwright install chromium
-ANTHROPIC_API_KEY=… ERP_URL=http://localhost:8080 ERP_USER=Administrator ERP_PASS=admin \
-ASK="Which customers owe us money?" npm run e2e
+export ANTHROPIC_API_KEY=… ERP_URL=http://localhost:8080 ERP_USER=Administrator ERP_PASS=admin
+
+ASK="Which customers owe us money?" npm run e2e     # one task, prints the transcript
+node scripts/conversations.test.mjs                  # persistence across restart, 100-conversation History, memory cards
+MODE=clear node scripts/context.test.mjs             # server-side clearing of old tool results keeps caching high
+MODE=compact node scripts/context.test.mjs           # compaction between tasks; recalls the first request verbatim
+node scripts/long-session.mjs                        # 30 questions in one conversation; per-call prompt sizes and cost
 ```
 
 Need a test ERPNext? [frappe_docker](https://github.com/frappe/frappe_docker)'s `pwd.yml` starts one with

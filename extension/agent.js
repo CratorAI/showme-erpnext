@@ -3,17 +3,29 @@
 
 const API = "https://api.anthropic.com/v1/messages";
 const MAX_STEPS = 40;
-const KEEP_RECENT_RESULTS = 4; // older screen snapshots are replaced by a stub to keep context small
+// Context editing (old tool results cleared server-side) and on-demand compaction (summaries).
+// History is append-only on our side: rewriting earlier turns would invalidate the model's earlier
+// reasoning and the prompt cache, so trimming is left to these server-side features.
+const BETAS = "context-management-2025-06-27,compact-2026-09-04";
+const MAX_TOOL_OUTPUT = 12000; // bound tool results BEFORE they're first sent, never after
+
+const headers = (apiKey) => ({
+	"content-type": "application/json",
+	"x-api-key": apiKey,
+	"anthropic-version": "2023-06-01",
+	"anthropic-beta": BETAS,
+	"anthropic-dangerous-direct-browser-access": "true",
+});
 
 /**
  * Run one user turn to completion: call the model, execute any tools, repeat until it stops.
  * `messages` is the running API history and is mutated in place.
  */
-export async function runTurn({ apiKey, model, system, tools, messages, signal, onText, onTextBlockStart, onUsage, executeTool }) {
+export async function runTurn({ apiKey, model, system, tools, messages, contextManagement, signal, onText, onTextBlockStart, onUsage, onEdits, executeTool }) {
 	for (let step = 0; step < MAX_STEPS; step++) {
-		trimOldResults(messages);
-		const { content, stopReason, usage } = await streamOnce({ apiKey, model, system, tools, messages, signal, onText, onTextBlockStart });
+		const { content, stopReason, usage, edits } = await streamOnce({ apiKey, model, system, tools, messages, contextManagement, signal, onText, onTextBlockStart });
 		onUsage?.(usage);
+		if (edits?.length) onEdits?.(edits);
 		messages.push({ role: "assistant", content });
 		if (stopReason !== "tool_use") return;
 
@@ -27,12 +39,12 @@ export async function runTurn({ apiKey, model, system, tools, messages, signal, 
 			} catch (e) {
 				out = { text: `ERROR: ${String(e.message || e).split("\n")[0]}`, isError: true };
 			}
+			let text = out.text || "(no output)";
+			if (text.length > MAX_TOOL_OUTPUT) text = `${text.slice(0, MAX_TOOL_OUTPUT)}\n… [cut at ${MAX_TOOL_OUTPUT} characters; ask for less, e.g. fewer fields or rows]`;
 			results.push({
 				type: "tool_result",
 				tool_use_id: block.id,
-				content: out.image
-					? [{ type: "image", source: { type: "base64", media_type: "image/png", data: out.image } }]
-					: out.text || "(no output)",
+				content: out.image ? [{ type: "image", source: { type: "base64", media_type: "image/png", data: out.image } }] : text,
 				...(out.isError ? { is_error: true } : {}),
 			});
 		}
@@ -41,7 +53,7 @@ export async function runTurn({ apiKey, model, system, tools, messages, signal, 
 	throw new Error(`Stopped after ${MAX_STEPS} steps`);
 }
 
-async function streamOnce({ apiKey, model, system, tools, messages, signal, onText, onTextBlockStart }) {
+async function streamOnce({ apiKey, model, system, tools, messages, contextManagement, signal, onText, onTextBlockStart }) {
 	const body = {
 		model,
 		max_tokens: 4096,
@@ -50,18 +62,9 @@ async function streamOnce({ apiKey, model, system, tools, messages, signal, onTe
 		system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
 		tools: tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t)),
 		messages: withCacheBreakpoint(messages),
+		...(contextManagement ? { context_management: contextManagement } : {}),
 	};
-	const res = await fetch(API, {
-		method: "POST",
-		signal,
-		headers: {
-			"content-type": "application/json",
-			"x-api-key": apiKey,
-			"anthropic-version": "2023-06-01",
-			"anthropic-dangerous-direct-browser-access": "true",
-		},
-		body: JSON.stringify(body),
-	});
+	const res = await fetch(API, { method: "POST", signal, headers: headers(apiKey), body: JSON.stringify(body) });
 	if (!res.ok) {
 		const err = await res.json().catch(() => ({}));
 		throw new Error(err.error?.message || `Anthropic API error ${res.status}`);
@@ -71,6 +74,7 @@ async function streamOnce({ apiKey, model, system, tools, messages, signal, onTe
 	let stopReason = null;
 	// Input-side counts arrive on message_start, the final output count on message_delta.
 	const usage = {};
+	let edits = null;
 	const reader = res.body.getReader();
 	const decoder = new TextDecoder();
 	let buf = "";
@@ -109,12 +113,13 @@ async function streamOnce({ apiKey, model, system, tools, messages, signal, onTe
 			} else if (ev.type === "message_delta") {
 				stopReason = ev.delta.stop_reason || stopReason;
 				if (ev.usage) Object.assign(usage, ev.usage);
+				if (ev.context_management?.applied_edits) edits = ev.context_management.applied_edits;
 			} else if (ev.type === "error") {
 				throw new Error(ev.error?.message || "Anthropic stream error");
 			}
 		}
 	}
-	return { content: blocks.filter(Boolean).filter((b) => b.type !== "text" || b.text), stopReason, usage };
+	return { content: blocks.filter(Boolean).filter((b) => b.type !== "text" || b.text), stopReason, usage, edits };
 }
 
 // Mark the last block of the conversation as a cache breakpoint (on a copy; history stays clean).
@@ -128,17 +133,43 @@ function withCacheBreakpoint(messages) {
 	return out;
 }
 
-// Screen snapshots are big and go stale fast; keep only the most recent few in full.
-function trimOldResults(messages) {
-	const results = [];
-	for (const m of messages) {
-		if (m.role !== "user" || typeof m.content === "string") continue;
-		for (const b of m.content) if (b.type === "tool_result") results.push(b);
-	}
-	for (const b of results.slice(0, -KEEP_RECENT_RESULTS)) {
-		if (Array.isArray(b.content)) b.content = "[earlier screenshot omitted]";
-		else if (typeof b.content === "string" && b.content.length > 600) {
-			b.content = b.content.slice(0, 300) + "\n… [earlier screen omitted; look again if you need it]";
-		}
-	}
+/**
+ * On-demand compaction: summarise the whole history into one signed block that replaces it.
+ * Same model, system and tools as the conversation (the summariser reads them; it never runs tools).
+ * Returns { ok, message, usage } where message is the new single-message history, or { ok:false, reason }.
+ */
+export async function compact({ apiKey, model, system, tools, messages, instructions }) {
+	const res = await fetch(API, {
+		method: "POST",
+		headers: headers(apiKey),
+		body: JSON.stringify({
+			model,
+			max_tokens: 6000,
+			system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+			tools,
+			messages,
+			compaction: { type: "summarize", instructions },
+		}),
+	});
+	const j = await res.json().catch(() => ({}));
+	if (!res.ok) return { ok: false, reason: j.error?.message || `HTTP ${res.status}` };
+	// Billing is reported per iteration; the top-level counts are zero for a compaction call.
+	const usage = (j.usage?.iterations || []).reduce(
+		(u, it) => ({ input_tokens: u.input_tokens + (it.input_tokens || 0), output_tokens: u.output_tokens + (it.output_tokens || 0), cache_read_input_tokens: u.cache_read_input_tokens + (it.cache_read_input_tokens || 0), cache_creation_input_tokens: u.cache_creation_input_tokens + (it.cache_creation_input_tokens || 0) }),
+		{ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+	);
+	if (j.stop_reason !== "compaction" || !j.content?.length) return { ok: false, reason: j.stop_reason, usage };
+	return { ok: true, message: { role: "assistant", content: j.content }, usage };
+}
+
+// Small, cheap one-shot call (titles). Thinking off, a handful of output tokens.
+export async function quick({ apiKey, model, prompt, maxTokens = 40 }) {
+	const res = await fetch(API, {
+		method: "POST",
+		headers: headers(apiKey),
+		body: JSON.stringify({ model, max_tokens: maxTokens, thinking: { type: "disabled" }, messages: [{ role: "user", content: prompt }] }),
+	});
+	const j = await res.json().catch(() => ({}));
+	if (!res.ok) throw new Error(j.error?.message || `HTTP ${res.status}`);
+	return { text: (j.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim(), usage: j.usage || {} };
 }

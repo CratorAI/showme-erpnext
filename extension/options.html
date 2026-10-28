@@ -2,7 +2,7 @@
 <html>
 	<head>
 		<meta charset="utf-8" />
-		<title>Crator for ERPNext: settings</title>
+		<title>ShowMe for ERPNext: settings</title>
 		<link rel="stylesheet" href="ui.css" />
 		<style>
 			main { max-width: 760px; margin: 40px auto 80px; padding: 0 24px; }
@@ -21,8 +21,8 @@
 	</head>
 	<body>
 		<main>
-			<div class="brand"><img src="icons/48.png" alt="" /><h1>Crator for ERPNext</h1></div>
-			<p>Everything here is stored only in this browser. Your keys go straight to Anthropic and OpenAI; nothing passes through a Crator server.</p>
+			<div class="brand"><img src="icons/48.png" alt="" /><h1>ShowMe for ERPNext</h1></div>
+			<p>Everything here is stored only in this browser. Your keys go straight to Anthropic and OpenAI; nothing passes through anyone else's server.</p>
 
 			<section class="card stack">
 				<h2>API keys</h2>
@@ -34,7 +34,7 @@
 				<div>
 					<label for="openaiKey">OpenAI API key (optional, for voice)</label>
 					<input type="password" id="openaiKey" placeholder="sk-…" autocomplete="off" />
-					<div class="hint">Voice uses GPT-Live: you talk, it narrates while Crator works. Billed per minute of audio.</div>
+					<div class="hint">Voice uses GPT-Live: you talk, it narrates while ShowMe works. Billed per minute of audio.</div>
 				</div>
 			</section>
 
@@ -69,22 +69,40 @@
 			<section class="card stack">
 				<h2>Safety</h2>
 				<label class="toggle"><input type="checkbox" id="confirmRisky" />
-					<span><b>Ask before Submit, Cancel, Delete or Amend</b><span class="muted">Crator always asks in the sidebar before clicking these.</span></span></label>
+					<span><b>Ask before Submit, Cancel, Delete or Amend</b><span class="muted">ShowMe always asks in the sidebar before clicking these.</span></span></label>
 				<label class="toggle"><input type="checkbox" id="allowChanges" />
-					<span><b>Allow setup changes</b><span class="muted">Lets Crator propose custom fields, field rules, scripts, notifications and workflows. Each one needs your Apply, is logged below, and can be undone. Needs a System Manager login. Try it on a test site first.</span></span></label>
+					<span><b>Allow setup changes</b><span class="muted">Lets ShowMe propose custom fields, field rules, scripts, notifications and workflows. Each one needs your Apply, is logged below, and can be undone. Needs a System Manager login. Try it on a test site first.</span></span></label>
 			</section>
 			<div class="row" style="margin-top: 12px"><button class="primary" id="save">Save</button><span class="saved" id="saved">Saved</span></div>
 
 			<section class="card stack">
+				<h2>Conversations</h2>
+				<p>Saved only in this browser (IndexedDB), per site. Never synced, and never sent anywhere except to the model provider while you're using them. They can contain data from your ERPNext.</p>
+				<div class="row">
+					<label for="keepDays" style="margin:0">Keep conversations for</label>
+					<select id="keepDays" style="width:auto">
+						<option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option>
+						<option value="365">1 year</option><option value="0">Forever</option>
+					</select>
+					<span class="hint" style="margin:0">Pinned ones are always kept. Saved with the button above.</span>
+				</div>
+				<p class="hint" id="convStats"></p>
+				<div class="row">
+					<button id="deleteUnpinned">Delete all except pinned</button>
+					<button id="deleteEverything">Delete everything</button>
+				</div>
+			</section>
+
+			<section class="card stack">
 				<div class="row" style="justify-content: space-between"><h2 style="margin:0">Usage</h2><button class="link" id="resetUsage">Reset</button></div>
-				<p>What Crator has spent on your keys from this browser: real token counts from each response, priced at list rates. An estimate; your provider's billing is the source of truth.</p>
+				<p>What ShowMe has spent on your keys from this browser: real token counts from each response, priced at list rates. An estimate; your provider's billing is the source of truth.</p>
 				<div class="row hint" style="margin-top:0"><span id="priceSource">Prices: …</span><button class="link" id="refreshPrices">Refresh</button></div>
 				<div id="usage"></div>
 			</section>
 
 			<section class="card stack">
 				<h2>Skills</h2>
-				<p>Markdown files that teach Crator how <i>your</i> ERPNext is set up: your naming, custom fields, workflows, which warehouse is which, how you do things. Same idea as a <code>SKILL.md</code>: optional frontmatter with <code>name</code> and <code>description</code>, then anything you'd tell a new colleague.</p>
+				<p>Markdown files that teach ShowMe how <i>your</i> ERPNext is set up: your naming, custom fields, workflows, which warehouse is which, how you do things. Same idea as a <code>SKILL.md</code>: optional frontmatter with <code>name</code> and <code>description</code>, then anything you'd tell a new colleague.</p>
 				<div class="drop" id="drop">Drop <code>.md</code> files here, or click to choose</div>
 				<input type="file" id="file" accept=".md,.markdown,.txt" multiple hidden />
 				<details>
@@ -99,13 +117,13 @@
 
 			<section class="card stack">
 				<h2>Sites</h2>
-				<p>Sites where Crator runs. Turn a site on from the toolbar icon while it's open.</p>
+				<p>Sites where ShowMe runs. Turn a site on from the toolbar icon while it's open.</p>
 				<div id="sites"></div>
 			</section>
 
 			<section class="card stack">
-				<h2>Setup changes made by Crator</h2>
-				<p>Every change applied from an approval card. To undo, open that site and ask Crator to "undo the last change" (or "undo all your changes").</p>
+				<h2>Setup changes made by ShowMe</h2>
+				<p>Every change applied from an approval card. To undo, open that site and ask ShowMe to "undo the last change" (or "undo all your changes").</p>
 				<div id="changes"></div>
 			</section>
 		</main>

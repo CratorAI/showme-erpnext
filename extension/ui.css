@@ -1,4 +1,4 @@
-/* Shared styles for the popup and the settings page (Crator tokens). */
+/* Shared styles for the popup and the settings page (Crator design tokens). */
 :root {
 	--bg: #fcfcfb; --fg: oklch(0.145 0 0); --card: #fff; --muted: oklch(0.97 0 0); --muted-fg: oklch(0.556 0 0);
 	--border: oklch(0.922 0 0); --brand: #f9693c; --brand-fg: #fff; --success: oklch(0.55 0.15 160); --destructive: oklch(0.577 0.245 27.325);

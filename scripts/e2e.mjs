@@ -20,7 +20,7 @@ if (!ANTHROPIC_API_KEY || !ERP_URL) {
 }
 const origin = new URL(ERP_URL).origin;
 
-const tmp = mkdtempSync(path.join(tmpdir(), "crator-e2e-"));
+const tmp = mkdtempSync(path.join(tmpdir(), "showme-e2e-"));
 const ext = path.join(tmp, "extension");
 cpSync(new URL("../extension", import.meta.url).pathname, ext, { recursive: true });
 const manifest = JSON.parse(readFileSync(path.join(ext, "manifest.json"), "utf8"));
@@ -63,11 +63,11 @@ try {
 		}
 		console.log(`--- ${text} (${Math.round((Date.now() - t0) / 1000)}s)`);
 	}
-	await page.screenshot({ path: path.join(tmpdir(), "crator-e2e.png") });
+	await page.screenshot({ path: path.join(tmpdir(), "showme-e2e.png") });
 	console.log(
 		(await page.evaluate(() => [...document.querySelectorAll("#trainer-msgs > *")].map((e) => "• " + e.innerText.replace(/\n+/g, " | ")).join("\n")))
 	);
-	console.log(`screenshot: ${path.join(tmpdir(), "crator-e2e.png")}`);
+	console.log(`screenshot: ${path.join(tmpdir(), "showme-e2e.png")}`);
 	const sw2 = ctx.serviceWorkers()[0];
 	if (sw2) console.log("usage totals:", JSON.stringify(await sw2.evaluate(() => chrome.storage.local.get("usage").then((x) => x.usage))));
 	console.log("cost tooltip:", await page.evaluate(() => document.querySelector(".tcost")?.title));

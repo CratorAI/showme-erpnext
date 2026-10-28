@@ -1,14 +1,14 @@
 {
 	"manifest_version": 3,
-	"name": "Crator for ERPNext",
+	"name": "ShowMe for ERPNext",
 	"version": "0.1.0",
-	"description": "An AI copilot inside your ERPNext: it does things on screen with a visible cursor, talks you through it, and can adjust your setup with your approval.",
-	"permissions": ["storage", "scripting", "tabs", "activeTab"],
+	"description": "The AI guide for people self-implementing ERPNext: ask in your own words, and it shows you on your own screen.",
+	"permissions": ["storage", "unlimitedStorage", "scripting", "tabs", "activeTab"],
 	"host_permissions": ["https://api.anthropic.com/*", "https://api.openai.com/*"],
 	"optional_host_permissions": ["https://*/*", "http://*/*"],
 	"background": { "service_worker": "background.js", "type": "module" },
 	"action": {
-		"default_title": "Crator for ERPNext",
+		"default_title": "ShowMe for ERPNext",
 		"default_popup": "popup.html",
 		"default_icon": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" }
 	},

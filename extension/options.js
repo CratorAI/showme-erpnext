@@ -2,9 +2,9 @@
 const $ = (id) => document.getElementById(id);
 const DEFAULTS = {
 	anthropicKey: "", openaiKey: "", model: "claude-sonnet-5-5", voiceModel: "gpt-live-1", voice: "marin",
-	allowChanges: false, confirmRisky: true,
+	allowChanges: false, confirmRisky: true, keepDays: 90,
 };
-const FIELDS = ["anthropicKey", "openaiKey", "model", "voiceModel", "voice"];
+const FIELDS = ["anthropicKey", "openaiKey", "model", "voiceModel", "voice", "keepDays"];
 const CHECKS = ["allowChanges", "confirmRisky"];
 const API_ORIGINS = ["https://api.anthropic.com/*", "https://api.openai.com/*"];
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -17,6 +17,7 @@ for (const k of CHECKS) $(k).checked = settings[k];
 
 $("save").onclick = async () => {
 	for (const k of FIELDS) settings[k] = $(k).value.trim();
+	settings.keepDays = Number(settings.keepDays);
 	for (const k of CHECKS) settings[k] = $(k).checked;
 	await chrome.storage.local.set({ settings });
 	$("saved").classList.add("show");
@@ -197,8 +198,26 @@ async function renderPriceSource(force = false) {
 }
 $("refreshPrices").onclick = () => renderPriceSource(true);
 
+// ---------- Conversations ----------
+
+async function renderConvStats() {
+	const st = await chrome.runtime.sendMessage({ kind: "conversation-stats" });
+	const mb = st?.usage != null ? ` · ${(st.usage / 1e6).toFixed(1)} MB used in this browser` : "";
+	$("convStats").textContent = st ? `${st.count} conversation${st.count === 1 ? "" : "s"} across ${st.sites} site${st.sites === 1 ? "" : "s"}${mb}` : "";
+}
+async function deleteConvs(includePinned) {
+	const what = includePinned ? "ALL conversations, including pinned ones" : "all conversations except pinned ones";
+	if (!confirm(`Delete ${what} on every site? This can't be undone.`)) return;
+	const r = await chrome.runtime.sendMessage({ kind: "delete-all-conversations", includePinned });
+	alert(`Deleted ${r?.deleted ?? 0} conversation(s).`);
+	renderConvStats();
+}
+$("deleteUnpinned").onclick = () => deleteConvs(false);
+$("deleteEverything").onclick = () => deleteConvs(true);
+
 renderSites();
 renderSkills();
 renderChanges();
 renderUsage();
 renderPriceSource();
+renderConvStats();

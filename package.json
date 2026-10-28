@@ -1,13 +1,14 @@
 {
-	"name": "crator-for-erpnext",
+	"name": "showme-erpnext",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Chrome extension: an AI copilot inside ERPNext that does things on screen, talks you through it, and adjusts your setup with your approval.",
+	"description": "ShowMe: the AI guide for people self-implementing ERPNext. A Chrome extension that shows you how, on your own screen.",
 	"type": "module",
 	"license": "MIT",
 	"scripts": {
 		"e2e": "node scripts/e2e.mjs",
-		"zip": "cd extension && zip -r ../crator-for-erpnext.zip . -x '.*'"
+		"zip": "cd extension && zip -r ../showme-erpnext.zip . -x '.*'",
+		"test": "node scripts/conversations.test.mjs && MODE=clear node scripts/context.test.mjs && MODE=compact node scripts/context.test.mjs"
 	},
 	"devDependencies": {
 		"playwright": "^1.64.1"

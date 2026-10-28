@@ -1,12 +1,14 @@
-// Crator for ERPNext: service worker.
+// ShowMe for ERPNext: service worker.
 // Owns each tab's conversation, runs the agent loop (agent.js) with the user's own Anthropic key,
 // executes tools in the page (content.js for the cursor/clicks/snapshot, the page's MAIN world for
 // Frappe's JS API), and creates GPT-Live voice sessions with the user's OpenAI key.
-import { runTurn } from "./agent.js";
+import { compact, quick, runTurn } from "./agent.js";
 import { agentPrompt, voicePrompt } from "./prompts.js";
 import { addUsage, callCost, emptyUsage, formatTokens, formatUSD, getPrices, priceFor } from "./pricing.js";
+import { deleteAll, deleteConversation, getConversation, getTranscript, listConversations, prune, saveConversation, stats, updateMeta } from "./store.js";
 
 const DEFAULTS = {
+	keepDays: 90, // conversations not touched for this long are deleted (pinned ones are kept)
 	anthropicKey: "",
 	openaiKey: "",
 	model: "claude-sonnet-5-5",
@@ -35,12 +37,14 @@ async function siteOrigins() {
 
 async function syncContentScripts() {
 	const matches = await siteOrigins();
-	const existing = await chrome.scripting.getRegisteredContentScripts({ ids: ["crator"] });
+	// Installs from before the rename registered the script as "crator": remove that so it isn't injected twice.
+	if ((await chrome.scripting.getRegisteredContentScripts({ ids: ["crator"] })).length) await chrome.scripting.unregisterContentScripts({ ids: ["crator"] });
+	const existing = await chrome.scripting.getRegisteredContentScripts({ ids: ["showme"] });
 	if (!matches.length) {
-		if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: ["crator"] });
+		if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: ["showme"] });
 		return;
 	}
-	const def = { id: "crator", matches, js: ["content.js"], runAt: "document_idle", persistAcrossSessions: true };
+	const def = { id: "showme", matches, js: ["content.js"], runAt: "document_idle", persistAcrossSessions: true };
 	await (existing.length ? chrome.scripting.updateContentScripts([def]) : chrome.scripting.registerContentScripts([def]));
 }
 chrome.runtime.onInstalled.addListener(syncContentScripts);
@@ -48,40 +52,90 @@ chrome.runtime.onStartup.addListener(syncContentScripts);
 chrome.permissions.onAdded.addListener(syncContentScripts);
 chrome.permissions.onRemoved.addListener(syncContentScripts);
 
-// ---------- Sessions (one conversation per tab, persisted so a worker restart loses nothing) ----------
+// ---------- Conversations (stored in IndexedDB, see store.js; each tab shows one) ----------
 
-const sessions = new Map();
+const convs = new Map(); // id -> live state: { meta, ui, api, frozen, busy, abort, waiter, queue, turn }
+const RESUME_WITHIN_MS = 6 * 60 * 60 * 1000; // a new tab picks up the site's latest conversation if recent
 
-async function session(tabId) {
-	if (sessions.has(tabId)) return sessions.get(tabId);
-	const saved = (await chrome.storage.session.get(`s${tabId}`))[`s${tabId}`];
-	const s = { ui: saved?.ui || [], api: saved?.api || [], busy: false, abort: null, waiter: null, queue: [] };
-	// A card left pending by a previous worker can no longer be answered.
-	for (const m of s.ui) if (m.role === "approval" && m.status === "pending") m.status = "cancelled";
-	repairHistory(s.api);
-	sessions.set(tabId, s);
-	return s;
+const newId = () => crypto.randomUUID();
+
+function blankConv(site) {
+	const now = Date.now();
+	return {
+		meta: { id: newId(), site, title: "New conversation", titleSource: "pending", createdAt: now, updatedAt: now, pinned: false, usd: 0, tokens: 0 },
+		ui: [],
+		api: [],
+		frozen: null,
+		busy: false, abort: null, waiter: null, queue: [], turn: null,
+	};
 }
-chrome.tabs.onRemoved.addListener((tabId) => {
-	sessions.delete(tabId);
-	chrome.storage.session.remove(`s${tabId}`);
-});
+
+async function loadConv(id) {
+	if (convs.has(id)) return convs.get(id);
+	const [meta, t] = await Promise.all([getConversation(id), getTranscript(id)]);
+	if (!meta) return null;
+	const c = { meta, ui: t?.ui || [], api: t?.api || [], frozen: t?.frozen || null, busy: false, abort: null, waiter: null, queue: [], turn: null };
+	// A card left pending by a previous worker can no longer be answered.
+	for (const m of c.ui) if (m.role === "approval" && m.status === "pending") m.status = "cancelled";
+	repairHistory(c.api);
+	convs.set(id, c);
+	return c;
+}
+
+const tabKey = (tabId) => `tab:${tabId}`;
+
+// The conversation a tab shows: its own if it has one, else the site's latest recent one, else a new one.
+async function convForTab(tabId, site) {
+	const key = tabKey(tabId);
+	const { [key]: id } = await chrome.storage.session.get(key);
+	if (id) {
+		const c = await loadConv(id);
+		if (c && c.meta.site === site) return c;
+	}
+	const [latest] = await listConversations(site, 1);
+	let c = latest && Date.now() - latest.updatedAt < RESUME_WITHIN_MS ? await loadConv(latest.id) : null;
+	if (!c || c.busy) {
+		c = blankConv(site);
+		convs.set(c.meta.id, c); // saved on first message, so empty chats don't pile up in History
+	}
+	await chrome.storage.session.set({ [key]: c.meta.id });
+	return c;
+}
+
+async function showInTab(tabId, c) {
+	await chrome.storage.session.set({ [tabKey(tabId)]: c.meta.id });
+	sync(c, true, [tabId]);
+}
+
+async function tabsShowing(c) {
+	const all = await chrome.storage.session.get(null);
+	return Object.entries(all).filter(([k, v]) => k.startsWith("tab:") && v === c.meta.id).map(([k]) => Number(k.slice(4)));
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove(tabKey(tabId)));
 
 const timers = {};
-function sync(tabId, s, now = false) {
-	const send = () => chrome.tabs.sendMessage(tabId, { cmd: "setChat", list: s.ui, busy: s.busy }).catch(() => {});
+// Push the transcript to every tab showing this conversation (throttled while streaming) and save it.
+function sync(c, now = false, onlyTabs = null) {
+	const id = c.meta.id;
+	const send = async () => {
+		const tabs = onlyTabs || (await tabsShowing(c));
+		const payload = { cmd: "setChat", list: c.ui, busy: c.busy, conv: { id, title: c.meta.title } };
+		for (const t of tabs) chrome.tabs.sendMessage(t, payload).catch(() => {});
+	};
 	if (now) {
-		clearTimeout(timers[`u${tabId}`]);
-		timers[`u${tabId}`] = null;
+		clearTimeout(timers[`u${id}`]);
+		timers[`u${id}`] = null;
 		send();
-	} else if (!timers[`u${tabId}`]) {
-		timers[`u${tabId}`] = setTimeout(() => {
-			timers[`u${tabId}`] = null;
+	} else if (!timers[`u${id}`]) {
+		timers[`u${id}`] = setTimeout(() => {
+			timers[`u${id}`] = null;
 			send();
 		}, 60);
 	}
-	clearTimeout(timers[`p${tabId}`]);
-	timers[`p${tabId}`] = setTimeout(() => chrome.storage.session.set({ [`s${tabId}`]: { ui: s.ui.slice(-200), api: s.api } }), 400);
+	if (!c.ui.length) return; // nothing worth saving yet
+	clearTimeout(timers[`p${id}`]);
+	timers[`p${id}`] = setTimeout(() => saveConversation(c.meta, { ui: c.ui, api: c.api, frozen: c.frozen }).catch(() => {}), 400);
 }
 
 // If a turn died mid-tool, the API history ends in tool_use with no tool_result: close it off.
@@ -227,17 +281,37 @@ async function getSkills(origin) {
 	return skills.filter((s) => s.enabled !== false && (s.scope === "*" || s.scope === origin));
 }
 
+// Append a learned fact to this site's "site-notes" skill (created on first use). Only called after the
+// user pressed Remember on the card, so nothing about their setup is stored without their say-so.
+async function appendSiteNote(origin, fact) {
+	const { skills = [] } = await chrome.storage.local.get("skills");
+	let sk = skills.find((x) => x.name === "site-notes" && x.scope === origin);
+	if (!sk) {
+		sk = {
+			id: crypto.randomUUID(),
+			name: "site-notes",
+			description: "Facts about how this business uses ERPNext, saved from conversations with your approval",
+			content: "# Site notes\nLearned in conversations, each saved after you approved it. Edit freely.\n",
+			scope: origin,
+			enabled: true,
+		};
+		skills.push(sk);
+	}
+	sk.content = `${sk.content.trimEnd()}\n- ${fact} _(saved ${new Date().toISOString().slice(0, 10)})_\n`;
+	await chrome.storage.local.set({ skills });
+}
+
 // ---------- Approvals (setup changes and risky clicks) ----------
 
 async function askApproval(tabId, s, card) {
 	const c = { role: "approval", id: crypto.randomUUID(), status: "pending", changes: [], ...card };
 	s.ui.push(c);
-	sync(tabId, s, true);
+	sync(s, true);
 	const evt = await new Promise((resolve) => (s.waiter = resolve));
 	if (evt.type === "chat") s.ui.push({ role: "user", text: evt.text });
 	const approved = evt.type === "approve" || (evt.type === "chat" && YES.test(evt.text));
 	c.status = approved ? "approved" : "cancelled";
-	sync(tabId, s, true);
+	sync(s, true);
 	return { approved, card: c, feedback: evt.type === "chat" && !approved ? evt.text : null };
 }
 
@@ -323,6 +397,19 @@ function toolDefs({ skills, allowChanges }) {
 			input_schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
 		},
 	];
+	t.push({
+		name: "remember_setup_fact",
+		description:
+			"Propose saving a durable fact about how THIS business uses ERPNext to the site's notes (a skill file), so future conversations know it. The user sees it on an approval card; nothing is saved unless they press Remember. Use for vocabulary (\"indent\" = Material Request), which company/warehouse/price list is used for what, naming conventions, what a custom field means, recurring preferences. The user must have stated or confirmed it. Not for one-off data (a specific order, a count), not for anything already in the skills, at most one per task.",
+		input_schema: {
+			type: "object",
+			properties: {
+				fact: { type: "string", description: "One line, in the user's terms, e.g. \"Indent means Material Request (type Purchase).\"" },
+				why: { type: "string", description: "Where this came from, e.g. \"You said this while raising MAT-MR-0004\"" },
+			},
+			required: ["fact", "why"],
+		},
+	});
 	if (skills.length) {
 		t.push({
 			name: "read_skill",
@@ -377,7 +464,7 @@ async function executeTool(ctx, name, input) {
 	const { tabId, s, settings, origin, skills } = ctx;
 	const step = (text) => {
 		s.ui.push({ role: "activity", text });
-		sync(tabId, s);
+		sync(s);
 	};
 	switch (name) {
 		case "look_at_screen":
@@ -393,7 +480,7 @@ async function executeTool(ctx, name, input) {
 			const label = (await toPage(tabId, { cmd: "labelOf", ref: input.ref })).label || "";
 			if (settings.confirmRisky && RISKY.test(label.trim())) {
 				const { approved, feedback } = await askApproval(tabId, s, {
-					title: `Let Crator click “${label}”?`,
+					title: `Let ShowMe click “${label}”?`,
 					summary:
 						/submit/i.test(label)
 							? "Submitting makes this document final and posts its stock and accounting entries. After that it can only be cancelled or amended."
@@ -428,6 +515,20 @@ async function executeTool(ctx, name, input) {
 			const sk = skills.find((x) => x.name.toLowerCase() === String(input.name).toLowerCase());
 			return { text: sk ? sk.content : `No skill named "${input.name}". Available: ${skills.map((x) => x.name).join(", ")}` };
 		}
+		case "remember_setup_fact": {
+			step("Proposing a note about your setup");
+			const fact = String(input.fact || "").trim().replace(/\s+/g, " ").slice(0, 300);
+			if (!fact) return { text: "Empty fact; nothing proposed.", isError: true };
+			const { approved, feedback } = await askApproval(tabId, s, {
+				kind: "memory",
+				title: "Remember this about your setup?",
+				summary: `${fact}\n\n_${input.why || ""}_`,
+				detail: `Saved to "site-notes" for ${new URL(origin).host}, used from your next conversation. Edit or remove it in Settings → Skills.`,
+			});
+			if (!approved) return { text: feedback ? `Not saved. The user said: "${feedback}"` : "Not saved; the user declined." };
+			await appendSiteNote(origin, fact);
+			return { text: "Saved to site-notes. It applies from the next conversation; you already know it here." };
+		}
 		case "change_erp": {
 			step("Proposing a change");
 			const bad = input.changes.find((c) => !CHANGE_DOCTYPES.includes(c.doctype));
@@ -435,14 +536,14 @@ async function executeTool(ctx, name, input) {
 			const { approved, card, feedback } = await askApproval(tabId, s, { kind: "change", summary: input.summary, changes: input.changes });
 			if (!approved) return { text: feedback ? `Not applied. The user said: "${feedback}". Adjust or answer them.` : "User cancelled; nothing changed." };
 			card.status = "applying";
-			sync(tabId, s, true);
+			sync(s, true);
 			const applied = [];
 			try {
 				for (const c of input.changes) applied.push(await applyOne(tabId, c));
 			} catch (e) {
 				for (const a of applied.reverse()) await revertOne(tabId, a); // all or nothing
 				card.status = "failed";
-				sync(tabId, s, true);
+				sync(s, true);
 				return { text: `FAILED, rolled back, nothing changed: ${e.message}`, isError: true };
 			}
 			const key = changeKey(origin);
@@ -451,7 +552,7 @@ async function executeTool(ctx, name, input) {
 			await chrome.storage.local.set({ [key]: log });
 			card.status = "applied";
 			card.applied = applied;
-			sync(tabId, s, true);
+			sync(s, true);
 			const screen = await reloadAndLook(tabId);
 			return { text: `Applied: ${applied.map((a) => `${a.action} ${a.doctype} ${a.name}`).join("; ")}. Page reloaded. Now show it to the user.\n\n${screen}` };
 		}
@@ -473,17 +574,17 @@ async function executeTool(ctx, name, input) {
 	return { text: `Unknown tool ${name}`, isError: true };
 }
 
-// ---------- A turn ----------
-
 // ---------- Usage and cost ----------
 
-function costLine({ usage: u, usd, model, source, pricedAt }) {
+function costLine({ usage: u, usd, model, source, pricedAt, calls, edits }) {
 	const tokens = u.input + u.output + u.cacheRead + u.cacheWrite;
 	const inTotal = u.input + u.cacheRead + u.cacheWrite;
 	const cached = inTotal ? Math.round((u.cacheRead / inTotal) * 100) : 0;
 	const when = pricedAt ? ` (updated ${new Date(pricedAt).toLocaleDateString()})` : "";
 	return {
 		role: "cost",
+		calls,
+		cleared: edits || 0,
 		note:
 			usd != null
 				? `Estimated at ${model} list prices from the ${source}${when}. Your provider's billing is the source of truth.`
@@ -511,6 +612,20 @@ async function recordUsage(origin, usd, u) {
 	await chrome.storage.local.set({ usage });
 }
 
+// Spend that isn't a task of its own (titles, compaction): added to the month and site, not the task count.
+async function recordExtra(origin, usd, u) {
+	const month = new Date().toISOString().slice(0, 7);
+	const { usage = {} } = await chrome.storage.local.get("usage");
+	const m = (usage[month] ||= { usd: 0, tasks: 0, tokens: 0, unpriced: 0, voiceSeconds: 0, sites: {} });
+	const tokens = u.input + u.output + u.cacheRead + u.cacheWrite;
+	m.tokens += tokens;
+	if (usd == null) m.unpriced += tokens;
+	else m.usd += usd;
+	const site = (m.sites[origin] ||= { usd: 0, tasks: 0 });
+	site.usd += usd || 0;
+	await chrome.storage.local.set({ usage });
+}
+
 async function recordVoice(seconds) {
 	const month = new Date().toISOString().slice(0, 7);
 	const { usage = {} } = await chrome.storage.local.get("usage");
@@ -519,74 +634,183 @@ async function recordVoice(seconds) {
 	await chrome.storage.local.set({ usage });
 }
 
+// ---------- Context management (thresholds tuned from measured sessions, see scripts/long-session.mjs) ----------
+
+// Clear old tool results server-side once the prompt passes 30k tokens, keeping the last 3; only when it
+// frees at least 10k, so the cache invalidation it causes pays for itself.
+const CONTEXT_EDITING = {
+	edits: [
+		{
+			type: "clear_tool_uses_20250919",
+			trigger: { type: "input_tokens", value: 30000 },
+			keep: { type: "tool_uses", value: 3 },
+			clear_at_least: { type: "input_tokens", value: 10000 },
+			exclude_tools: ["read_skill"],
+		},
+	],
+};
+// Tests lower the threshold through settings.devClearAt (not exposed in the UI).
+const withTrigger = (cm, at) => ({ edits: cm.edits.map((e) => ({ ...e, trigger: { type: "input_tokens", value: at }, clear_at_least: { type: "input_tokens", value: Math.min(2000, at / 4) } })) });
+
+// Between tasks, summarise the conversation once it passes this many tokens (rare: days of use).
+const COMPACT_AT = 60000;
+const COMPACT_INSTRUCTIONS = `Summarise this conversation between a user and ShowMe, an assistant that operates their ERPNext
+on screen. Start with a numbered list of every request the user made, in order, quoted in their own words, each
+followed by a one-line answer or outcome (with the key numbers or document names). Then keep, word for word where it matters: every document created or edited (doctype and name/ID) and its
+state (draft/submitted); setup changes applied or declined; facts about how THIS business uses ERPNext (names,
+warehouses, companies, vocabulary, preferences); answers already given to data questions with their numbers;
+anything still open or promised. Drop screen snapshots, element refs and step-by-step clicking. Do not call
+tools; respond with the summary text only.`;
+
+async function maybeCompact(c, settings) {
+	const last = c.lastPrompt || 0;
+	if (last < (settings.devCompactAt || COMPACT_AT) || !c.frozen) return;
+	c.ui.push({ role: "activity", text: "Condensing earlier conversation" });
+	sync(c, true);
+	const r = await compact({ apiKey: settings.anthropicKey, model: c.frozen.model, system: c.frozen.system, tools: c.frozen.tools, messages: c.api, instructions: COMPACT_INSTRUCTIONS }).catch((e) => ({ ok: false, reason: e.message }));
+	if (r.usage) await addCost(c, c.frozen.model, r.usage);
+	if (r.ok) {
+		c.api = [r.message]; // the signed block replaces everything it summarises; the UI transcript stays whole
+		c.lastPrompt = 0;
+		c.ui.push({ role: "note", text: "Earlier conversation condensed to keep things fast. Nothing visible here was removed." });
+	} else c.ui.push({ role: "note", text: `Couldn't condense the conversation (${r.reason}); continuing as is.` });
+	sync(c, true);
+}
+
+// Title from the first exchange, with a cheap model; never overwrite a title the user set.
+async function maybeTitle(c, settings) {
+	if (c.meta.titleSource !== "pending") return;
+	const q = c.ui.find((m) => m.role === "user")?.text || "";
+	const a = c.ui.find((m) => m.role === "assistant" && m.text.trim())?.text || "";
+	c.meta.title = q.slice(0, 60) || "Conversation"; // placeholder until the model answers
+	try {
+		const { text, usage } = await quick({
+			apiKey: settings.anthropicKey,
+			model: TITLE_MODEL,
+			prompt: `Write a 3-6 word title for this ERPNext help conversation. Sentence case, no quotes or punctuation at the end.\n\nUser: ${q.slice(0, 400)}\nAssistant: ${a.slice(0, 400)}`,
+		});
+		await addCost(c, TITLE_MODEL, usage, { countTask: false });
+		const fresh = await getConversation(c.meta.id);
+		if (fresh?.titleSource === "user") return; // renamed meanwhile
+		if (text) c.meta.title = text.replace(/^["']|["'.]$/g, "").slice(0, 80);
+		c.meta.titleSource = "auto";
+	} catch {
+		c.meta.titleSource = "first-message";
+	}
+	sync(c, true);
+}
+const TITLE_MODEL = "claude-haiku-5-5";
+
+async function addCost(c, model, rawUsage, { countTask = false } = {}) {
+	const prices = await getPrices();
+	const price = priceFor(prices, model);
+	const u = addUsage(emptyUsage(), rawUsage);
+	const usd = price ? callCost(price, rawUsage) : null;
+	c.meta.usd += usd || 0;
+	c.meta.tokens += u.input + u.output + u.cacheRead + u.cacheWrite;
+	if (countTask) await recordUsage(c.meta.site, usd, u);
+	else await recordExtra(c.meta.site, usd, u);
+}
+
+// ---------- A turn ----------
+
+// The system prompt and tools are fixed for a conversation's lifetime: changing them mid-way would
+// invalidate the model's earlier reasoning and the cache. New settings/skills apply to new conversations.
+async function freeze(c, tabId, origin, settings) {
+	const [info, skills] = await Promise.all([siteInfo(tabId), getSkills(origin)]);
+	c.frozen = {
+		model: settings.model,
+		allowChanges: settings.allowChanges,
+		system: agentPrompt({ site: describeSite(info, origin), skills, allowChanges: settings.allowChanges }),
+		tools: toolDefs({ skills, allowChanges: settings.allowChanges }),
+	};
+}
+
 async function startTurn(tabId, text, voice) {
-	const s = await session(tabId);
-	if (s.busy) {
-		s.queue.push({ text, voice });
-		s.ui.push({ role: "user", text });
-		sync(tabId, s, true);
+	const tab = await chrome.tabs.get(tabId);
+	const url = new URL(tab.url);
+	const origin = url.origin;
+	const c = await convForTab(tabId, origin);
+	if (c.busy || c.compacting) {
+		c.queue.push({ text, voice, tabId });
+		c.ui.push({ role: "user", text, queued: true });
+		sync(c, true);
 		return;
 	}
-	s.ui.push({ role: "user", text });
-	s.busy = true;
-	sync(tabId, s, true);
+	c.ui.push({ role: "user", text });
+	c.busy = true;
+	c.meta.updatedAt = Date.now();
+	sync(c, true);
 
 	const settings = await getSettings();
 	try {
-		if (!settings.anthropicKey) throw new Error("Add your Anthropic API key in Crator's settings (the gear icon) to get started.");
-		const tab = await chrome.tabs.get(tabId);
-		const url = new URL(tab.url);
-		const origin = url.origin;
-		const [info, skills] = await Promise.all([siteInfo(tabId), getSkills(origin)]);
+		if (!settings.anthropicKey) throw new Error("Add your Anthropic API key in ShowMe's settings (the gear icon) to get started.");
+		if (!c.frozen) await freeze(c, tabId, origin, settings);
+		const skills = await getSkills(origin);
 		const mode = voice
 			? "[Voice mode: everything you write is read aloud as you work. One short spoken sentence before each action, plain words, no tables, lists, markdown or symbols, no ref ids. Finish with one or two spoken sentences.]\n"
 			: "";
-		s.api.push({ role: "user", content: `[User is on: ${url.pathname}]\n${mode}${text}` });
-		s.abort = new AbortController();
-		const ctx = { tabId, s, settings, origin, skills };
+		c.api.push({ role: "user", content: `[User is on: ${url.pathname}]\n${mode}${text}` });
+		c.abort = new AbortController();
+		const ctx = { tabId, s: c, settings: { ...settings, allowChanges: c.frozen.allowChanges }, origin, skills };
 		const prices = await getPrices();
-		const price = priceFor(prices, settings.model);
+		const price = priceFor(prices, c.frozen.model);
 		// usd stays null when the model has no known price: tokens are still counted.
-		s.turn = { usage: emptyUsage(), model: settings.model, origin, price, usd: price ? 0 : null, source: prices.source, pricedAt: prices.fetchedAt };
+		c.turn = { usage: emptyUsage(), calls: [], edits: 0, model: c.frozen.model, origin, price, usd: price ? 0 : null, source: prices.source, pricedAt: prices.fetchedAt };
 		await runTurn({
 			apiKey: settings.anthropicKey,
-			model: settings.model,
-			system: agentPrompt({ site: describeSite(info, origin), skills, allowChanges: settings.allowChanges }),
-			tools: toolDefs({ skills, allowChanges: settings.allowChanges }),
-			messages: s.api,
-			signal: s.abort.signal,
+			model: c.frozen.model,
+			system: c.frozen.system,
+			tools: c.frozen.tools,
+			messages: c.api,
+			contextManagement: settings.devClearAt ? withTrigger(CONTEXT_EDITING, settings.devClearAt) : CONTEXT_EDITING,
+			signal: c.abort.signal,
 			onTextBlockStart: () => {
-				s.ui.push({ role: "assistant", text: "" });
-				sync(tabId, s);
+				c.ui.push({ role: "assistant", text: "" });
+				sync(c);
 			},
 			onText: (d) => {
-				const last = s.ui[s.ui.length - 1];
+				const last = c.ui[c.ui.length - 1];
 				if (last?.role === "assistant") last.text += d;
-				else s.ui.push({ role: "assistant", text: d });
-				sync(tabId, s);
+				else c.ui.push({ role: "assistant", text: d });
+				sync(c);
 			},
 			onUsage: (u) => {
-				addUsage(s.turn.usage, u);
-				if (s.turn.price) s.turn.usd += callCost(s.turn.price, u);
+				addUsage(c.turn.usage, u);
+				const prompt = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+				c.turn.calls.push(prompt);
+				c.lastPrompt = prompt + (u.output_tokens || 0); // what the next request will at least carry
+				if (c.turn.price) c.turn.usd += callCost(c.turn.price, u);
 			},
+			onEdits: (edits) => (c.turn.edits += edits.reduce((n, e) => n + (e.cleared_input_tokens || 0), 0)),
 			executeTool: (name, input) => executeTool(ctx, name, input),
 		});
 	} catch (e) {
-		repairHistory(s.api);
-		s.ui.push(e.name === "AbortError" ? { role: "activity", text: "Stopped" } : { role: "assistant", text: `**Couldn't finish:** ${e.message}` });
+		repairHistory(c.api);
+		c.ui.push(e.name === "AbortError" ? { role: "activity", text: "Stopped" } : { role: "assistant", text: `**Couldn't finish:** ${e.message}` });
 	}
-	if (s.turn?.usage.calls) {
-		s.ui.push(costLine(s.turn));
-		await recordUsage(s.turn.origin, s.turn.usd, s.turn.usage);
+	if (c.turn?.usage.calls) {
+		c.ui.push(costLine(c.turn));
+		c.meta.usd += c.turn.usd || 0;
+		c.meta.tokens += c.turn.usage.input + c.turn.usage.output + c.turn.usage.cacheRead + c.turn.usage.cacheWrite;
+		await recordUsage(c.turn.origin, c.turn.usd, c.turn.usage);
 	}
-	s.turn = null;
-	s.busy = false;
-	s.abort = null;
-	sync(tabId, s, true);
-	const next = s.queue.shift();
+	c.turn = null;
+	c.busy = false;
+	c.abort = null;
+	c.meta.updatedAt = Date.now();
+	sync(c, true);
+
+	if (settings.anthropicKey) {
+		maybeTitle(c, settings); // in the background; doesn't block the next message
+		c.compacting = maybeCompact(c, settings).finally(() => (c.compacting = null));
+		await c.compacting;
+	}
+	const next = c.queue.shift();
 	if (next) {
-		s.ui.pop(); // it was shown when queued; startTurn shows it again
-		startTurn(tabId, next.text, next.voice);
+		const i = c.ui.findIndex((m) => m.queued && m.text === next.text);
+		if (i >= 0) c.ui.splice(i, 1); // shown while queued; startTurn shows it again in order
+		startTurn(next.tabId, next.text, next.voice);
 	}
 }
 
@@ -594,7 +818,7 @@ async function startTurn(tabId, text, voice) {
 
 async function liveSession(tabId, sdp, resume) {
 	const settings = await getSettings();
-	if (!settings.openaiKey) return { error: "Add an OpenAI API key in Crator's settings to use voice." };
+	if (!settings.openaiKey) return { error: "Add an OpenAI API key in ShowMe's settings to use voice." };
 	const tab = await chrome.tabs.get(tabId);
 	const origin = new URL(tab.url).origin;
 	const skills = await getSkills(origin);
@@ -619,57 +843,146 @@ async function liveSession(tabId, sdp, resume) {
 	return { sdp: j.transport.sdp };
 }
 
+// ---------- Export ----------
+
+function toMarkdown(c) {
+	const out = [`# ${c.meta.title}`, "", `_${new URL(c.meta.site).host} · started ${new Date(c.meta.createdAt).toLocaleString()} · ${formatUSD(c.meta.usd) || "$0"} estimated_`, ""];
+	let steps = [];
+	const flush = () => {
+		if (steps.length) out.push(`> Steps: ${steps.join(" → ")}`, "");
+		steps = [];
+	};
+	for (const m of c.ui) {
+		if (m.role === "activity") {
+			steps.push(m.text);
+			continue;
+		}
+		flush();
+		if (m.role === "user") out.push(`**You:** ${m.text}`, "");
+		else if (m.role === "assistant" && m.text.trim()) out.push(m.text.trim(), "");
+		else if (m.role === "approval") out.push(`> **${m.title || "Approval"}** (${m.status}): ${m.summary || ""}`, "");
+		else if (m.role === "cost") out.push(`_${m.text}_`, "");
+		else if (m.role === "note") out.push(`_${m.text}_`, "");
+	}
+	flush();
+	return out.join("\n");
+}
+
 // ---------- Messages from the page, the popup and the options page ----------
+
+let pruned = false;
+async function pruneOnce() {
+	if (pruned) return;
+	pruned = true;
+	const { keepDays } = await getSettings();
+	await prune(keepDays).catch(() => 0);
+}
+
+const metaOut = (m, currentId) => ({ id: m.id, title: m.title, updatedAt: m.updatedAt, pinned: m.pinned, usd: m.usd, current: m.id === currentId });
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
 	const tabId = sender.tab?.id ?? msg.tabId;
+	const site = sender.tab?.url ? new URL(sender.tab.url).origin : msg.site;
 	(async () => {
 		switch (msg.kind) {
 			case "hello": {
-				const s = await session(tabId);
+				pruneOnce();
+				const c = await convForTab(tabId, site);
 				const settings = await getSettings();
-				return { list: s.ui, busy: s.busy, hasKey: Boolean(settings.anthropicKey), hasVoice: Boolean(settings.openaiKey) };
+				return { list: c.ui, busy: c.busy, conv: { id: c.meta.id, title: c.meta.title }, hasKey: Boolean(settings.anthropicKey), hasVoice: Boolean(settings.openaiKey) };
 			}
 			case "heartbeat": // keeps this worker alive while a task or a voice call is running
 				return { ok: true };
 			case "chat": {
-				const s = await session(tabId);
-				if (s.waiter) {
-					const w = s.waiter;
-					s.waiter = null;
+				const c = await convForTab(tabId, site);
+				if (c.waiter) {
+					const w = c.waiter;
+					c.waiter = null;
 					w({ type: "chat", text: msg.text });
 				} else startTurn(tabId, msg.text, msg.voice);
 				return { ok: true };
 			}
 			case "approve":
 			case "reject": {
-				const s = await session(tabId);
-				if (s.waiter) {
-					const w = s.waiter;
-					s.waiter = null;
+				const c = await convForTab(tabId, site);
+				if (c.waiter) {
+					const w = c.waiter;
+					c.waiter = null;
 					w({ type: msg.kind });
 				}
 				return { ok: true };
 			}
 			case "stop": {
-				const s = await session(tabId);
-				s.queue = [];
-				if (s.waiter) {
-					const w = s.waiter;
-					s.waiter = null;
+				const c = await convForTab(tabId, site);
+				c.queue = [];
+				if (c.waiter) {
+					const w = c.waiter;
+					c.waiter = null;
 					w({ type: "reject" });
 				}
-				s.abort?.abort();
+				c.abort?.abort();
 				return { ok: true };
 			}
+			// ----- History -----
 			case "new-chat": {
-				const s = await session(tabId);
-				if (s.busy) return { ok: false };
-				s.ui = [];
-				s.api = [];
-				sync(tabId, s, true);
+				const c = blankConv(site);
+				convs.set(c.meta.id, c);
+				await showInTab(tabId, c);
 				return { ok: true };
 			}
+			case "list-conversations": {
+				pruneOnce();
+				const { [tabKey(tabId)]: currentId } = await chrome.storage.session.get(tabKey(tabId));
+				return { items: (await listConversations(site)).map((m) => metaOut(m, currentId)) };
+			}
+			case "open-conversation": {
+				const c = await loadConv(msg.id);
+				if (!c) return { error: "That conversation no longer exists." };
+				await showInTab(tabId, c);
+				return { ok: true };
+			}
+			case "rename-conversation": {
+				const title = String(msg.title || "").trim().slice(0, 80);
+				if (!title) return { ok: false };
+				const live = convs.get(msg.id);
+				if (live) Object.assign(live.meta, { title, titleSource: "user" });
+				await updateMeta(msg.id, { title, titleSource: "user" });
+				if (live) sync(live, true);
+				return { ok: true };
+			}
+			case "pin-conversation": {
+				const live = convs.get(msg.id);
+				const cur = live?.meta || (await getConversation(msg.id));
+				const pinned = !cur?.pinned;
+				if (live) live.meta.pinned = pinned;
+				await updateMeta(msg.id, { pinned });
+				return { ok: true, pinned };
+			}
+			case "delete-conversation": {
+				const live = convs.get(msg.id);
+				if (live?.busy) return { error: "Stop it first; it's still working." };
+				convs.delete(msg.id);
+				await deleteConversation(msg.id);
+				const { [tabKey(tabId)]: currentId } = await chrome.storage.session.get(tabKey(tabId));
+				if (currentId === msg.id) {
+					const c = blankConv(site);
+					convs.set(c.meta.id, c);
+					await showInTab(tabId, c);
+				}
+				return { ok: true };
+			}
+			case "export-conversation": {
+				const c = await loadConv(msg.id);
+				if (!c) return { error: "Not found" };
+				return { markdown: toMarkdown(c), filename: `${c.meta.title.replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "conversation"}.md` };
+			}
+			case "delete-all-conversations": {
+				for (const [id, c] of convs) if (!c.busy && (!msg.site || c.meta.site === msg.site) && (msg.includePinned || !c.meta.pinned)) convs.delete(id);
+				return { deleted: await deleteAll({ site: msg.site || null, includePinned: Boolean(msg.includePinned) }) };
+			}
+			case "conversation-stats":
+				return stats();
+			// ----- Page helpers -----
 			case "open-customize":
 				await inPage(tabId, (dt) => {
 					window.frappe.route_options = { doc_type: dt };
